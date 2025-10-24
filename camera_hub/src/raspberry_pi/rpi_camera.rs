@@ -145,7 +145,7 @@ impl RaspberryPiCamera {
             ps_tx,
             motion_fps as u8,
         )
-        .expect("Failed to start shared stream");
+            .expect("Failed to start shared stream");
 
         // Wait for the SPS and PPS frames before continuing.
         let mut sps_frame_opt = None;
@@ -189,9 +189,11 @@ impl RaspberryPiCamera {
     ) -> Result<(), Error> {
         let recording_window = duration.map(|secs| Duration::new(secs, 0));
         let recording_start_time = Instant::now();
-        let mut first_frame_found = false;
+
+        let mut started = false;             // started first fragment after first IDR
+        let mut samples_in_fragment = 0u32;  // count samples in the current fragment
         let mut frame_count: u64 = 0;
-        let time_per_frame: u64 = 1_000_000 / TOTAL_FRAME_RATE as u64;
+        let ticks_per_frame: u64 = 90_000 / TOTAL_FRAME_RATE as u64;
 
         loop {
             let frame = {
@@ -199,44 +201,45 @@ impl RaspberryPiCamera {
                 match queue.pop_front() {
                     Some(f) => f,
                     None => {
-                        // guard is dropped at the end of this block
                         drop(queue);
-                        thread::sleep(Duration::from_secs(1));
+                        thread::sleep(Duration::from_millis(100));
                         continue;
                     }
                 }
             };
 
-            // On I-frame, mark the beginning of a fragment.
-            if frame.kind == VideoFrameKind::IFrame {
-                first_frame_found = true;
-                if let Err(_e) = mp4.finish_fragment().await {
-                    // End of livestream.
-                    break;
-                }
+            // Open the very first fragment on the first IDR
+            if !started && frame.kind == VideoFrameKind::IFrame {
+                started = true;
+                samples_in_fragment = 0;
+            }
+            // On later IDR, close the previous fragment if it has samples.
+            else if started && frame.kind == VideoFrameKind::IFrame && samples_in_fragment > 0 {
+                mp4.finish_fragment().await?;
+                samples_in_fragment = 0;
             }
 
-            if first_frame_found {
-                // Compute the timestamp based on the frame count and fixed frame rate.
-                let frame_timestamp_micros = frame_count * time_per_frame;
-                // Convert Annex B NAL unit to AVCC format.
-                let avcc_data = Self::convert_annexb_to_avcc(&frame.data);
+            if started {
+                let ts = frame_count * ticks_per_frame;
+
+                let avcc = Self::annexb_to_avcc_frame(&frame.data, /*strip_aud*/ true, /*strip_ps*/ true);
                 mp4.video(
-                    &avcc_data,
-                    frame_timestamp_micros / 10, // Adjust conversion as needed.
+                    &avcc,
+                    ts,
                     frame.kind == VideoFrameKind::IFrame,
-                )
-                .await
-                .with_context(|| "Error processing video frame")?;
+                ).await?;
                 frame_count += 1;
+                samples_in_fragment += 1;
             }
 
             if let Some(window) = recording_window {
-                if Instant::now().duration_since(recording_start_time) > window {
-                    info!("Stopping the recording.");
-                    break;
-                }
+                if Instant::now().duration_since(recording_start_time) > window { break; }
             }
+        }
+
+        // Flush the last fragment if it has samples.
+        if started && samples_in_fragment > 0 {
+            mp4.finish_fragment().await?;
         }
         Ok(())
     }
@@ -273,7 +276,7 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::default(),
             file,
         )
-        .await?;
+            .await?;
 
         // Process the rest of the frames, writing both to the MP4 writer and to the raw file.
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
@@ -289,39 +292,89 @@ impl RaspberryPiCamera {
         sps_frame: VideoFrame,
         pps_frame: VideoFrame,
     ) -> Result<(), Error> {
+        // Detect 3/4-byte AnnexB start codes
+        fn start_code_len(b: &[u8]) -> usize {
+            if b.starts_with(&[0, 0, 0, 1]) { 4 } else if b.starts_with(&[0, 0, 1]) { 3 } else { 0 }
+        }
+        let sps_off = start_code_len(&sps_frame.data);
+        let pps_off = start_code_len(&pps_frame.data);
+
+        let sps = if sps_off > 0 { &sps_frame.data[sps_off..] } else { &sps_frame.data[..] };
+        let pps = if pps_off > 0 { &pps_frame.data[pps_off..] } else { &pps_frame.data[..] };
+
+        // sanity
+        if sps.is_empty() || (sps[0] & 0x1F) != 7 {
+            return Err(anyhow::anyhow!("Bad SPS NAL: first byte={:#04x}", sps.get(0).cloned().unwrap_or(0)));
+        }
+        if pps.is_empty() || (pps[0] & 0x1F) != 8 {
+            return Err(anyhow::anyhow!("Bad PPS NAL: first byte={:#04x}", pps.get(0).cloned().unwrap_or(0)));
+        }
+
         let mut fmp4 = Fmp4Writer::new(
-            // Removing the 4-byte length prefix
-            RpiCameraVideoParameters::new(
-                sps_frame.data[4..].to_vec(),
-                pps_frame.data[4..].to_vec(),
-            ),
+            RpiCameraVideoParameters::new(sps.to_vec(), pps.to_vec()),
             RpiCameraAudioParameters::default(),
             livestream_writer,
-        )
-        .await?;
-        fmp4.finish_header().await?;
+        ).await?;
+        fmp4.finish_header(None).await?;
+
         Self::copy(&mut fmp4, None, frame_queue).await?;
 
         Ok(())
     }
 
     // Required for MP4 muxing. Frames from rpicam-vid are in AnnexB, and we need Avcc for our muxer. FFmpeg did not have this output.
-    fn convert_annexb_to_avcc(nal: &[u8]) -> Vec<u8> {
-        // Determine the start code length.
-        let start_code_len = if nal.starts_with(&[0, 0, 0, 1]) {
-            4
-        } else if nal.starts_with(&[0, 0, 1]) {
-            3
-        } else {
-            0
-        };
-        let nal_payload = &nal[start_code_len..];
-        let nal_len = nal_payload.len() as u32;
+    fn annexb_to_avcc_frame(frame: &[u8], strip_aud: bool, strip_ps: bool) -> Vec<u8> {
+        // Detect start codes 0x000001 or 0x00000001
+        fn is_start_code(buf: &[u8], i: usize) -> Option<usize> {
+            if i + 3 <= buf.len() && &buf[i..i + 3] == [0, 0, 1] { return Some(3); }
+            if i + 4 <= buf.len() && &buf[i..i + 4] == [0, 0, 0, 1] { return Some(4); }
+            None
+        }
 
-        // Create a new vector with the 4-byte big-endian length prefix.
-        let mut avcc = nal_len.to_be_bytes().to_vec();
-        avcc.extend_from_slice(nal_payload);
-        avcc
+        // Collect payload spans of every NAL
+        let mut nal_spans: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0usize;
+        let mut open_at: Option<usize> = None;
+
+        while i < frame.len() {
+            if let Some(sc) = is_start_code(frame, i) {
+                if let Some(s) = open_at {
+                    // close previous NAL at start of this start code
+                    let end = i;
+                    if end > s { nal_spans.push((s, end)); }
+                }
+                open_at = Some(i + sc);
+                i += sc;
+            } else {
+                i += 1;
+            }
+        }
+        if let Some(s) = open_at {
+            if frame.len() > s {
+                nal_spans.push((s, frame.len()));
+            }
+        }
+        if nal_spans.is_empty() {
+            // No start codes: whole buffer is a single NAL
+            nal_spans.push((0, frame.len()));
+        }
+
+        // Build AVCC: [len][NAL] [len][NAL] …
+        let mut out = Vec::with_capacity(frame.len() + nal_spans.len() * 4);
+        for (s, e) in nal_spans {
+            let nal = &frame[s..e];
+            if nal.is_empty() { continue; }
+            let nal_type = nal[0] & 0x1F;       // H.264 NAL type
+
+            // Optional stripping: AUD (9) and SPS/PPS (7/8) — SPS/PPS already in avcC
+            if strip_aud && nal_type == 9 { continue; }
+            if strip_ps && (nal_type == 7 || nal_type == 8) { continue; }
+
+            let len = (nal.len() as u32).to_be_bytes();
+            out.extend_from_slice(&len);
+            out.extend_from_slice(nal);
+        }
+        out
     }
 }
 
@@ -380,10 +433,11 @@ impl Camera for RaspberryPiCamera {
     }
 
     fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()> {
-        // Drop all the frames from the queue since we won't need them for livestreaming
-        let mut queue = self.frame_queue.lock().unwrap();
-        queue.clear();
-        drop(queue);
+        // We don't need old frames for the live session
+        {
+            let mut queue = self.frame_queue.lock().unwrap();
+            queue.clear();
+        }
 
         let frame_queue_clone = Arc::clone(&self.frame_queue);
         let sps_frame_clone = self.sps_frame.clone();
@@ -391,15 +445,15 @@ impl Camera for RaspberryPiCamera {
 
         thread::spawn(move || {
             let rt = Runtime::new().unwrap();
-
             let future = Self::write_fmp4(
                 livestream_writer,
                 frame_queue_clone,
                 sps_frame_clone,
                 pps_frame_clone,
             );
-
-            rt.block_on(future).unwrap();
+            if let Err(e) = rt.block_on(future) {
+                eprintln!("[Livestream] write_fmp4 error: {e:?}");
+            }
         });
 
         Ok(())
@@ -422,6 +476,7 @@ impl Camera for RaspberryPiCamera {
     }
 }
 
+
 struct RpiCameraVideoParameters {
     sps: Vec<u8>,
     pps: Vec<u8>,
@@ -433,59 +488,83 @@ impl RpiCameraVideoParameters {
     }
 }
 
-//FIXME: Do we need to modify this for the Raspberry PI implementation?
+
 impl CodecParameters for RpiCameraVideoParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
         write_box!(buf, b"avc1", {
-            buf.put_u32(0); // predefined & reserved
-            buf.put_u32(1); // data reference index
-            buf.put_u32(0); // reserved
-            buf.put_u64(0); // reserved
-            buf.put_u32(0); // reserved
-            buf.put_u16(WIDTH as u16); // width
-            buf.put_u16(HEIGHT as u16); // height
-            let dpi = 72 << 16;
-            buf.put_u32(dpi); // horizontal_resolution
-            buf.put_u32(dpi); // vertical_resolution
-            buf.put_u32(0); // reserved
-            buf.put_u16(1); // frame count
-            for _ in 0..32 {
-                // compressor name
-                buf.put_u8(0);
-            }
-            buf.put_u16(0x0018); // depth
-            buf.put_u16(0xffff); // pre-defined
+            // VisualSampleEntry per ISO/IEC 14496-12
+            // 6 bytes reserved
+            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
+            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
+            // data_reference_index
+            buf.put_u16(1);
+
+            // pre_defined, reserved
+            buf.put_u16(0); // pre_defined
+            buf.put_u16(0); // reserved
+            // pre_defined[3]
+            buf.put_u32(0);
+            buf.put_u32(0);
+            buf.put_u32(0);
+
+            // width/height
+            buf.put_u16(WIDTH as u16);
+            buf.put_u16(HEIGHT as u16);
+
+            // horiz/vert resolution (72 dpi in 16.16 fixed)
+            buf.put_u32(0x0048_0000);
+            buf.put_u32(0x0048_0000);
+
+            // reserved
+            buf.put_u32(0);
+
+            // frame_count
+            buf.put_u16(1);
+
+            // compressorname: Pascal string padded to 32 bytes
+            let name = b"Secluso H.264";
+            let n = name.len().min(31) as u8;
+            buf.put_u8(n);
+            buf.extend_from_slice(&name[..n as usize]);
+            for _ in (n as usize + 1)..32 { buf.put_u8(0); }
+
+            // depth and pre_defined (-1)
+            buf.put_u16(0x0018);
+            buf.put_i16(-1);
 
             write_box!(buf, b"avcC", {
-                buf.put_u8(1); // configuration version
-                buf.put_u8(self.sps[1]); // avc profile indication
-                buf.put_u8(self.sps[2]); // profile compatibility
-                buf.put_u8(self.sps[3]); // avc level indication
-                buf.put_u8(0xfc | 3); // Reserved (6 bits) + LengthSizeMinusOne (2 bits)
-                buf.put_u8(0xe0 | 1); // Reserved (3 bits) + numOfSequenceParameterSets (5 bits)
-                                      //sequence_parameter_sets (SPS)
-                buf.extend_from_slice(&(self.sps.len() as u16).to_be_bytes()); // len of sps
+                // Expect SPS/PPS without start-codes
+                debug_assert!(!self.sps.is_empty() && (self.sps[0] & 0x1F) == 7);
+                debug_assert!(!self.pps.is_empty() && (self.pps[0] & 0x1F) == 8);
+
+                buf.put_u8(1);                 // configurationVersion
+                buf.put_u8(self.sps[1]);       // AVCProfileIndication
+                buf.put_u8(self.sps[2]);       // profile_compatibility
+                buf.put_u8(self.sps[3]);       // AVCLevelIndication
+
+                // lengthSizeMinusOne=3 → 4-byte NAL length
+                buf.put_u8(0b1111_1100 | 0b11);
+
+                // numOfSequenceParameterSets=1
+                buf.put_u8(0b1110_0000 | 1);
+
+                // SPS
+                buf.put_u16(self.sps.len() as u16);
                 buf.extend_from_slice(&self.sps);
-                //picture_parameter_sets (PPS)
-                buf.put_u8(1); // number of pps sets
-                buf.extend_from_slice(&(self.pps.len() as u16).to_be_bytes()); // len of pps
+
+                // PPS count = 1
+                buf.put_u8(1);
+                buf.put_u16(self.pps.len() as u16);
                 buf.extend_from_slice(&self.pps);
             });
         });
-
         Ok(())
     }
 
-    // Not used
-    fn get_clock_rate(&self) -> u32 {
-        0
-    }
+    fn get_clock_rate(&self) -> u32 { 0 }
 
     fn get_dimensions(&self) -> (u32, u32) {
-        let width = (WIDTH as u32) << 16;
-        let height = (HEIGHT as u32) << 16;
-
-        (width, height)
+        ((WIDTH as u32) << 16, (HEIGHT as u32) << 16)
     }
 }
 
