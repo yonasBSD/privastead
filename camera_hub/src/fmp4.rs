@@ -106,7 +106,7 @@ impl TrakTracker {
             buf.put_u64(self.fragment_start_time);
         });
 
-        let mut data_offset_pos: Option<usize> = None;
+        let data_offset_pos: Option<usize>;
 
         const TRUN_DATA_OFFSET: u32 = 0x000001;
         const TRUN_FIRST_SAMPLE_FL: u32 = 0x000004;
@@ -265,7 +265,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
     }
 
     fn write_video_fragment(&self, buf: &mut BytesMut) -> Result<Option<usize>, Error> {
-        let mut trun_off: Option<usize> = None;
+        let trun_off: Option<usize>;
         write_box!(buf, b"traf", {
             write_box!(buf, b"tfhd", {
                 buf.put_u32(0x020000); // default-base-is-moof
@@ -278,7 +278,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
     }
 
     fn write_audio_fragment(&self, buf: &mut BytesMut) -> Result<Option<usize>, Error> {
-        let mut trun_off: Option<usize> = None;
+        let trun_off: Option<usize>;
         write_box!(buf, b"traf", {
             write_box!(buf, b"tfhd", {
                 buf.put_u32(0x020000); // default-base-is-moof

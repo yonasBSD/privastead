@@ -2,7 +2,7 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{
     collections::VecDeque,
     io,
@@ -22,7 +22,7 @@ use crate::{
     traits::{Camera, CodecParameters},
     write_box,
 };
-use anyhow::{Context, Error};
+use anyhow::{Error};
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
 use image::RgbImage;
@@ -51,7 +51,7 @@ pub enum VideoFrameKind {
 pub struct VideoFrame {
     pub data: Vec<u8>,
     pub kind: VideoFrameKind,
-    pub timestamp: Instant,
+    pub timestamp: SystemTime,
 }
 
 impl VideoFrame {
@@ -59,7 +59,7 @@ impl VideoFrame {
         Self {
             data,
             kind,
-            timestamp: Instant::now(),
+            timestamp: SystemTime::now(),
         }
     }
 }
@@ -223,11 +223,19 @@ impl RaspberryPiCamera {
                 let ts = frame_count * ticks_per_frame;
 
                 let avcc = Self::annexb_to_avcc_frame(&frame.data, /*strip_aud*/ true, /*strip_ps*/ true);
+
+                // Prepend per-frame SEI carrying capture time
+                let sei = Self::make_sei_unreg_avcc(frame.timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64);
+                let mut sample = Vec::with_capacity(sei.len() + avcc.len());
+                sample.extend_from_slice(&sei);
+                sample.extend_from_slice(&avcc);
+
                 mp4.video(
-                    &avcc,
+                    &sample,
                     ts,
                     frame.kind == VideoFrameKind::IFrame,
                 ).await?;
+
                 frame_count += 1;
                 samples_in_fragment += 1;
             }
@@ -283,6 +291,63 @@ impl RaspberryPiCamera {
         mp4.finish().await?;
 
         Ok(())
+    }
+
+
+    fn make_sei_unreg_avcc(epoch_ms: u64) -> Vec<u8> {
+        const NAL_TYPE_SEI: u8 = 6;
+        const PAYLOAD_TYPE_UNREG: u8 = 5;
+
+        // 16-byte UUID
+        const UUID: &[u8; 16] = b"SECLUSO_LATENCY_";
+
+        // Build raw RBSP (before EPB insertion)
+        // payload = UUID(16) + timestamp(8, big-endian)
+        let mut payload = Vec::with_capacity(24);
+        payload.extend_from_slice(UUID);
+        payload.extend_from_slice(&epoch_ms.to_be_bytes()); // 8B BE
+
+        // payloadType (5) using 255-extension coding
+        // payloadSize (24) using 255-extension coding
+        let mut rbsp = Vec::with_capacity(1 + 1 + payload.len() + 1);
+        rbsp.push(PAYLOAD_TYPE_UNREG);
+
+        let mut size = payload.len() as u32; // must be 24
+        while size >= 255 {
+            rbsp.push(255);
+            size -= 255;
+        }
+        rbsp.push(size as u8);
+
+        rbsp.extend_from_slice(&payload);
+
+        // rbsp_trailing_bits: 1 bit '1' then pad with zeros to byte boundary
+        rbsp.push(0x80);
+
+        // Emulation-prevention bytes
+        // Scan rbsp and after any 0x00 0x00 {00..03} pattern, insert 0x03 before that
+        let mut rbsp_epb = Vec::with_capacity(rbsp.len() + 8);
+        let mut zero_run = 0usize;
+        for &b in &rbsp {
+            if zero_run >= 2 && b <= 0x03 {
+                rbsp_epb.push(0x03);
+                zero_run = 0; // reset after insertion
+            }
+            rbsp_epb.push(b);
+            if b == 0x00 { zero_run += 1 } else { zero_run = 0 }
+        }
+
+        // Assemble the NAL (header + rbsp_epb)
+        // forbidden_zero_bit=0, nal_ref_idc=0, nal_unit_type=6 (SEI)
+        let mut nal = Vec::with_capacity(1 + rbsp_epb.len());
+        nal.push(0x00 | NAL_TYPE_SEI);
+        nal.extend_from_slice(&rbsp_epb);
+
+        // AVCC length-prefixed output
+        let mut out = Vec::with_capacity(4 + nal.len());
+        out.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+        out.extend_from_slice(&nal);
+        out
     }
 
     /// Streams fmp4 video.

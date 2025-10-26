@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
-use std::time::Instant;
+use std::time::{SystemTime};
 use std::{
     io::{BufReader, Read, Write},
     process::{Command, Stdio},
@@ -77,7 +77,7 @@ pub fn start(
                             Ok(h264_frame2) => {
                                 if let Some(mut frame) = h264_frame2 {
                                     // Update the frame timestamp on extraction.
-                                    frame.timestamp = Instant::now();
+                                    frame.timestamp = SystemTime::now();
 
                                     if !sps_sent && frame.kind == VideoFrameKind::Sps {
                                         let _ = ps_tx.send(frame.clone());
@@ -166,7 +166,7 @@ fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>, frame: 
 
     // Remove frames older than the time window.
     while let Some(front) = queue.front() {
-        if Instant::now().duration_since(front.timestamp) > time_window {
+        if SystemTime::now().duration_since(front.timestamp).unwrap() > time_window {
             queue.pop_front();
         } else {
             break;
