@@ -145,12 +145,21 @@ build_and_manifest() {
           ;;
       esac
 
+      # Compute sha256 of the final on-disk binary
+      local BIN_SHA
+      BIN_SHA="$(sha256sum "$ART_DIR/$BIN" | awk '{print $1}')"
+      if [[ -z "$BIN_SHA" ]]; then
+        echo "Failed to compute sha256 for $ART_DIR/$BIN" >&2
+        exit 1
+      fi
+
       # Write all data to artifacts
-      printf '    {"package":"%s","target":"%s","bin":"%s","bin_path":"%s","crate":"%s","version":"%s","crate_lock_sha256":"%s","rust_digest":"%s"}\n' \
+            printf '    {"package":"%s","target":"%s","bin":"%s","bin_path":"%s","sha256":"%s","crate":"%s","version":"%s","crate_lock_sha256":"%s","rust_digest":"%s"}\n' \
         "$PKG" \
         "$TRIPLE" \
         "$BIN" \
         "$TRIPLE/$BIN" \
+        "$BIN_SHA" \
         "$CRATE_NAME" \
         "$CRATE_VERSION" \
         "$CRATE_LOCK_SHA" \
@@ -192,12 +201,12 @@ compare_runs() {
   # Normalize to key = package|target|bin
   jq -S '[.artifacts[]
         | {key: (.package + "|" + .target + "|" + .bin),
-          package, target, bin, crate, version, bin_path,
+          package, target, bin, crate, version, bin_path, sha256,
           crate_lock_sha256, rust_digest}]' "$M1" > "$RUN1/keys.json"
 
   jq -S '[.artifacts[]
         | {key: (.package + "|" + .target + "|" + .bin),
-          package, target, bin, crate, version, bin_path,
+          package, target, bin, crate, version, bin_path, sha256,
           crate_lock_sha256, rust_digest}]' "$M2" > "$RUN2/keys.json"
 
 
@@ -233,7 +242,7 @@ compare_runs() {
     fi
 
     # Load in data from the manifest files relevant to our checks
-    local PKG TGT BIN CRATE1 VER1 P1 LOCK1 DIG1 CRATE2 VER2 P2 LOCK2 DIG2 
+    local PKG TGT BIN CRATE1 VER1 P1 LOCK1 DIG1 CRATE2 VER2 P2 LOCK2 DIG2 SHA1 SHA2
     PKG="$(jq -r '.package' <<<"$A")"
     TGT="$(jq -r '.target'  <<<"$A")"
     BIN="$(jq -r '.bin'     <<<"$A")"
@@ -243,12 +252,14 @@ compare_runs() {
     P1="$RUN1/$(jq -r '.bin_path'             <<<"$A")"
     LOCK1="$(jq -r '.crate_lock_sha256' <<<"$A")"
     DIG1="$(jq -r '.rust_digest'        <<<"$A")"
+    SHA1="$(jq -r '.sha256 // empty' <<<"$A")"
 
     CRATE2="$(jq -r '.crate'            <<<"$B")"
     VER2="$(jq -r '.version'            <<<"$B")"
     P2="$RUN2/$(jq -r '.bin_path'             <<<"$B")"
     LOCK2="$(jq -r '.crate_lock_sha256' <<<"$B")"
     DIG2="$(jq -r '.rust_digest'        <<<"$B")"
+    SHA2="$(jq -r '.sha256 // empty' <<<"$B")"
 
     # metadata checks
     local meta_ok=1
@@ -291,6 +302,25 @@ compare_runs() {
       echo "OK   : $PKG | $TGT | $BIN (crate=$CRATE1 v$VER1, sha=$H1)"
     fi
   done < "$SMALL_DIR/keys.txt"
+
+      if [[ -z "$SHA1" || -z "$SHA2" ]]; then
+      echo "FAIL: manifest missing sha256 for $PKG | $TGT | $BIN"
+      status=1; continue
+    fi
+
+    if [[ "$H1" != "$SHA1" ]]; then
+      echo "FAIL: run1 manifest sha256 does not match file for $PKG | $TGT | $BIN"
+      echo "  manifest: $SHA1"
+      echo "  file    : $H1"
+      status=1; continue
+    fi
+
+    if [[ "$H2" != "$SHA2" ]]; then
+      echo "FAIL: run2 manifest sha256 does not match file for $PKG | $TGT | $BIN"
+      echo "  manifest: $SHA2"
+      echo "  file    : $H2"
+      status=1; continue
+    fi
 
   # Extras in the larger run
   local EXTRAS
