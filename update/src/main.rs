@@ -30,15 +30,15 @@ use openpgp::{Fingerprint, KeyHandle};
 // Binaries stored in INSTALL_ROOT/bin/BINARY_NAME
 const INSTALL_ROOT: &str = "/opt/secluso";
 
-// Where we fetch releases from
-const OWNER_REPO: &str = "secluso/secluso";
+// Where we fetch releases from (default).
+const DEFAULT_OWNER_REPO: &str = "secluso/secluso";
 
 /// A signer entry... the label field controls the signature filename in the zip,
 /// and the github_user field controls which GitHub account’s keys we accept for that signature.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Signer {
-    label: &'static str,
-    github_user: &'static str,
+    label: String,
+    github_user: String,
 }
 
 /// Primary use point here two signatures, two github contributors, two different keys
@@ -48,16 +48,7 @@ struct Signer {
 ///
 /// And both will be verified against keys from:
 ///   https://github.com/jkaczman.gpg, https://github.com/arrdalan.gpg
-const SIGNERS: [Signer; 2] = [
-    Signer {
-        label: "jkaczman",
-        github_user: "jkaczman",
-    },
-    Signer {
-        label: "arrdalan",
-        github_user: "arrdalan",
-    },
-];
+const DEFAULT_SIGNERS: [(&str, &str); 2] = [("jkaczman", "jkaczman"), ("arrdalan", "arrdalan")];
 
 fn is_bundle_zip_asset(name: &str) -> bool {
     // Avoid the source code (zip), try to target real asset (e.g. "secluso-v0.1.0.zip")
@@ -70,11 +61,41 @@ fn manifest_sig_path_for(label: &str) -> String {
     format!("{}.{}.asc", MANIFEST_PATH, label) // manifest.json.jkaczman-1.asc
 }
 
+fn default_signers() -> Vec<Signer> {
+    DEFAULT_SIGNERS
+        .iter()
+        .map(|(label, github_user)| Signer {
+            label: (*label).to_string(),
+            github_user: (*github_user).to_string(),
+        })
+        .collect()
+}
+
+fn parse_sig_keys(values: &[String]) -> Result<Vec<Signer>> {
+    let mut signers = Vec::with_capacity(values.len());
+    for raw in values {
+        let mut parts = raw.splitn(2, ':');
+        let label = parts.next().unwrap_or("").trim();
+        let github_user = parts.next().unwrap_or("").trim();
+        if label.is_empty() || github_user.is_empty() {
+            bail!(
+                "Invalid --sig-key value {}. Expected NAME:GITHUB_USER with both parts non-empty.",
+                raw
+            );
+        }
+        signers.push(Signer {
+            label: label.to_string(),
+            github_user: github_user.to_string(),
+        });
+    }
+    Ok(signers)
+}
+
 const USAGE: &str = r#"
 Secluso updater.
 
 Usage:
-  secluso-update --component COMPONENT [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT]
+  secluso-update --component COMPONENT [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo OWNER/REPO] [--sig-key NAME:GITHUB_USER]...
   secluso-update (--help | -h)
   secluso-update (--version | -v)
 
@@ -85,6 +106,8 @@ Options:
                              If omitted, no service is restarted.
   --interval-secs N          Poll interval seconds [default: 60].
   --github-timeout-secs N    HTTP timeout seconds [default: 20].
+  --github-repo OWNER/REPO   GitHub repo to poll for releases [default: secluso/secluso].
+  --sig-key NAME:GITHUB_USER Signature label + GitHub user (repeatable).
   --version, -v              Show tool version.
   --help, -h                 Show this screen.
 "#;
@@ -95,6 +118,8 @@ struct Args {
     flag_restart_unit: Option<String>,
     flag_interval_secs: u64,
     flag_github_timeout_secs: u64,
+    flag_github_repo: String,
+    flag_sig_key: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +268,12 @@ fn main() -> ! {
 
 fn check_update(args: &Args) -> Result<()> {
     let component = Component::parse(&args.flag_component)?;
+    let cli_signers = parse_sig_keys(&args.flag_sig_key)?;
+    let signers = if cli_signers.is_empty() {
+        default_signers()
+    } else {
+        cli_signers
+    };
 
     let current_version = match get_current_version(component) {
         Ok(version) => version,
@@ -257,7 +288,7 @@ fn check_update(args: &Args) -> Result<()> {
         .build()?;
 
     // Fetch latest release metadata
-    let release = fetch_latest_release(&client)?;
+    let release = fetch_latest_release(&client, &args.flag_github_repo)?;
     println!("Latest Tag = {}", release.tag_name);
     if let Some(p) = &release.published_at {
         println!("Published At = {}", p);
@@ -309,9 +340,9 @@ fn check_update(args: &Args) -> Result<()> {
     println!("Read manifest.json ({} bytes)", manifest_bytes.len());
 
     // Read all signature files (by label)
-    let mut sigs: Vec<(Signer, Vec<u8>)> = Vec::with_capacity(SIGNERS.len());
-    for signer in SIGNERS {
-        let sig_path = manifest_sig_path_for(signer.label);
+    let mut sigs: Vec<(Signer, Vec<u8>)> = Vec::with_capacity(signers.len());
+    for signer in &signers {
+        let sig_path = manifest_sig_path_for(&signer.label);
         let sig_bytes = read_zip_file(&mut zip, &sig_path)
             .with_context(|| format!("Missing signature file in zip: {}", sig_path))?;
         println!(
@@ -321,24 +352,24 @@ fn check_update(args: &Args) -> Result<()> {
             signer.github_user,
             sig_bytes.len()
         );
-        sigs.push((signer, sig_bytes));
+        sigs.push((signer.clone(), sig_bytes));
     }
 
     // Fetch GitHub keyrings and verify each signature over manifest.json
-    let mut key_cache: HashMap<&'static str, (Vec<Cert>, HashSet<Fingerprint>)> = HashMap::new();
+    let mut key_cache: HashMap<String, (Vec<Cert>, HashSet<Fingerprint>)> = HashMap::new();
 
     for (signer, sig_bytes) in &sigs {
-        let (certs, allowed_fprs) = match key_cache.get(signer.github_user) {
+        let (certs, allowed_fprs) = match key_cache.get(&signer.github_user) {
             Some(v) => v.clone(),
             None => {
-                let v = fetch_github_user_keyring(&client, signer.github_user)?;
+                let v = fetch_github_user_keyring(&client, &signer.github_user)?;
                 println!(
                     "Loaded {} cert(s) for github_user={} ({} key fps)",
                     v.0.len(),
                     signer.github_user,
                     v.1.len()
                 );
-                key_cache.insert(signer.github_user, v.clone());
+                key_cache.insert(signer.github_user.clone(), v.clone());
                 v
             }
         };
@@ -348,8 +379,8 @@ fn check_update(args: &Args) -> Result<()> {
             sig_bytes,
             &certs,
             &allowed_fprs,
-            signer.github_user,
-            signer.label,
+            &signer.github_user,
+            &signer.label,
         )
             .with_context(|| {
                 format!(
@@ -494,8 +525,8 @@ fn require_asset_sha256_digest_matches_download(
 }
 
 
-fn fetch_latest_release(client: &Client) -> Result<GhRelease> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", OWNER_REPO);
+fn fetch_latest_release(client: &Client, owner_repo: &str) -> Result<GhRelease> {
+    let url = format!("https://api.github.com/repos/{}/releases/latest", owner_repo);
     let resp = client.get(&url).send()?.error_for_status()?;
     Ok(resp.json::<GhRelease>()?)
 }
