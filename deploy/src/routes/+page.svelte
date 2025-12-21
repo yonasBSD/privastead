@@ -261,7 +261,6 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
   letter-spacing: 0.04em;
   font-size: 0.75rem;
 }
-.req-status.ok { color: #16a34a; }
 .req-status.missing { color: #dc2626; }
 .req-detail { color: #555; }
 
