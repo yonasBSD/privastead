@@ -3,6 +3,7 @@
 
 mod pi_hub_provision;
 mod provision_server;
+mod requirements;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,6 +14,7 @@ pub fn run() {
             pi_hub_provision::check_docker,
             pi_hub_provision::build_image,
             pi_hub_provision::generate_user_credentials,
+            requirements::check_requirements,
             provision_server::test_server_ssh,
             provision_server::provision_server,
         ])

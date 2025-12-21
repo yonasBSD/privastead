@@ -1,9 +1,13 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import { checkRequirements, type RequirementStatus } from "$lib/api";
 
   const STORAGE_KEY = "secluso-dev-settings";
   let devModeOn = false;
+  let requirements: RequirementStatus[] = [];
+  let checkingRequirements = true;
+  let missingRequirements: RequirementStatus[] = [];
 
   onMount(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -13,6 +17,18 @@
       devModeOn = !!parsed.enabled;
     } catch {
       devModeOn = false;
+    }
+  });
+
+  onMount(async () => {
+    try {
+      requirements = await checkRequirements();
+      missingRequirements = requirements.filter((req) => !req.ok);
+    } catch {
+      requirements = [];
+      missingRequirements = [];
+    } finally {
+      checkingRequirements = false;
     }
   });
 </script>
@@ -27,6 +43,26 @@
     </div>
   </div>
   <p class="subtitle">Get your encrypted camera system online in two easy steps.</p>
+
+  {#if checkingRequirements}
+    <section class="card requirements">
+      <h3>Setup checks</h3>
+      <p class="muted">Checking local tools…</p>
+    </section>
+  {:else if missingRequirements.length > 0}
+    <section class="card requirements">
+      <h3>Missing tools</h3>
+      <ul class="req-list">
+        {#each missingRequirements as req}
+          <li class="req-item">
+            <span class="req-name">{req.name}</span>
+            <span class="req-status missing">Missing</span>
+            <span class="req-detail">{req.hint}</span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   <!-- step a -->
   <section class="step">
@@ -199,6 +235,40 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
   transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
 }
 .card:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,0,0,0.10); border-color: #d8d8d8; }
+
+.requirements h3 {
+  margin: 0 0 10px 0;
+  font-size: 1.05rem;
+}
+.req-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.req-item {
+  display: grid;
+  grid-template-columns: 180px 90px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 0.95rem;
+}
+.req-name { font-weight: 600; }
+.req-status {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+}
+.req-status.ok { color: #16a34a; }
+.req-status.missing { color: #dc2626; }
+.req-detail { color: #555; }
+
+@media (max-width: 720px) {
+  .req-item { grid-template-columns: 1fr; }
+  .req-status { width: max-content; }
+}
 .card:active { transform: translateY(0); }
 
 .card h3 { margin: 0; font-size: 1.1rem; }

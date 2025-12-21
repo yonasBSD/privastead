@@ -41,6 +41,13 @@ export type ProvisionEvent =
   | { type: "log"; run_id: string; level: "info" | "warn" | "error"; step?: string; line: string }
   | { type: "done"; run_id: string; ok: boolean };
 
+export interface RequirementStatus {
+  name: string;
+  ok: boolean;
+  version?: string;
+  hint: string;
+}
+
 export interface ImageBuildRequest {
   variant?: "official" | "diy";
   qrOutputPath: string;
@@ -63,6 +70,10 @@ export async function provisionServer(
 
 export async function buildImage(req: ImageBuildRequest): Promise<JobStart> {
   return invoke("build_image", { req });
+}
+
+export async function checkRequirements(): Promise<RequirementStatus[]> {
+  return invoke("check_requirements");
 }
 
 export async function listenProvisionEvents(
