@@ -1,3 +1,4 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pi_hub_provision::credentials::generate_user_credentials_only;
 use crate::pi_hub_provision::temp::shared_temp_dir;
 use crate::provision_server::events::{log_line, step_ok, step_start};

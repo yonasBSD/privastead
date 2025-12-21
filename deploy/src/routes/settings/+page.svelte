@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";

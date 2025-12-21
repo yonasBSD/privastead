@@ -1,3 +1,4 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::provision_server::events::log_line;
 use crate::provision_server::types::{SshAuth, SshTarget};
 use anyhow::{bail, Context, Result};

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import { page } from "$app/stores";

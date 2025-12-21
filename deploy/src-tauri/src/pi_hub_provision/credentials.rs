@@ -1,3 +1,4 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pi_hub_provision::docker::{DockerCleanup, run_with_output};
 use anyhow::{bail, Result};
 use std::path::Path;

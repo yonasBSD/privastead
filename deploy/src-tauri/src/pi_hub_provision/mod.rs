@@ -1,3 +1,4 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
 mod build;
 pub(crate) mod credentials;
 mod docker;

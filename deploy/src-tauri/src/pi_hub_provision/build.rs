@@ -1,3 +1,4 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pi_hub_provision::credentials::generate_secluso_credentials;
 use crate::pi_hub_provision::docker::{docker_version, run_with_output, write_docker_context};
 use crate::pi_hub_provision::events::{log_line, step_error, step_ok, step_start};

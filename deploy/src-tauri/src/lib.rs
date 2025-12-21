@@ -1,3 +1,4 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
 // more tauri command info at https://tauri.app/develop/calling-rust/
 
 mod pi_hub_provision;

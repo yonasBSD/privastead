@@ -1,3 +1,4 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pi_hub_provision::events::handle_event_line;
 use anyhow::{bail, Context, Result};
 use std::fs;
