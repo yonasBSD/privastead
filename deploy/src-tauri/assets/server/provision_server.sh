@@ -47,7 +47,7 @@ fi
 
 emit "info" "deps" "Installing dependencies (apt-get)..."
 ${SUDO} apt-get update
-${SUDO} apt-get install -y --no-install-recommends ca-certificates curl jq unzip coreutils git pkg-config libssl-dev
+${SUDO} apt-get install -y --no-install-recommends ca-certificates curl jq unzip coreutils git pkg-config libssl-dev build-essential
 
 emit "info" "install" "Ensuring install dirs..."
 ${SUDO} mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/server/user_credentials" "$INSTALL_PREFIX/manifest"
