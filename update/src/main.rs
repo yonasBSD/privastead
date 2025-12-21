@@ -571,18 +571,21 @@ fn zip_root_prefix(zip: &mut ZipArchive<Cursor<Bytes>>) -> Option<String> {
 }
 
 fn read_zip_file(zip: &mut ZipArchive<Cursor<Bytes>>, path: &str) -> Result<Vec<u8>> {
-    let mut f = match zip.by_name(path) {
-        Ok(f) => f,
-        Err(_) => {
-            if let Some(prefix) = zip_root_prefix(zip) {
-                let alt = format!("{}{}", prefix, path);
-                zip.by_name(&alt)
-                    .with_context(|| format!("zip missing entry {} (also tried {})", path, alt))?
-            } else {
-                return Err(anyhow!("zip missing entry {}", path));
-            }
+    match zip.by_name(path) {
+        Ok(mut f) => {
+            let mut buf = Vec::with_capacity(f.size() as usize);
+            f.read_to_end(&mut buf)?;
+            return Ok(buf);
         }
-    };
+        Err(_) => {}
+    }
+
+    let prefix = zip_root_prefix(zip)
+        .ok_or_else(|| anyhow!("zip missing entry {}", path))?;
+    let alt = format!("{}{}", prefix, path);
+    let mut f = zip
+        .by_name(&alt)
+        .with_context(|| format!("zip missing entry {} (also tried {})", path, alt))?;
     let mut buf = Vec::with_capacity(f.size() as usize);
     f.read_to_end(&mut buf)?;
     Ok(buf)
