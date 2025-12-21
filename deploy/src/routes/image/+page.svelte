@@ -47,6 +47,7 @@
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
+  const FIRST_TIME_KEY = "secluso-first-time";
 
   // config state
   let productVariant: VariantKey = "diy";
@@ -69,6 +70,7 @@
   // progress state
   let building = false;
   let errorMsg = "";
+  let firstTimeOn = false;
 
   async function pickQrOutput() {
     const path = await save({
@@ -188,6 +190,17 @@
         };
     }
   });
+
+  onMount(() => {
+    const raw = localStorage.getItem(FIRST_TIME_KEY);
+    if (raw === null) return;
+    firstTimeOn = raw === "true";
+  });
+
+  function toggleFirstTime() {
+    firstTimeOn = !firstTimeOn;
+    localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
+  }
 </script>
 
 <main class="wrap">
@@ -196,6 +209,37 @@
     <h1>Build Raspberry Pi Image</h1>
     <div class="spacer"></div>
   </header>
+
+  {#if firstTimeOn}
+    <section class="card">
+      <div class="cardhead">
+        <h2>Need help?</h2>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>On</span>
+        </label>
+      </div>
+      <ol class="quick-steps">
+        <li>Pick a device option. If you are unsure, choose DIY.</li>
+        <li>Choose where to save the camera QR code.</li>
+        <li>Choose where to save the Raspberry Pi image.</li>
+        <li>Click Build Image, then use your normal SD card tool to flash it.</li>
+        <li>Start the Raspberry Pi and keep the camera QR code for the app.</li>
+        <li>When you are done, go back and set up your server.</li>
+      </ol>
+    </section>
+  {:else}
+    <section class="card">
+      <div class="cardhead">
+        <h2>Need help?</h2>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>Off</span>
+        </label>
+      </div>
+      <p class="muted">Turn this on for quick guidance.</p>
+    </section>
+  {/if}
 
   <!-- variant selector -->
   <section class="card">
@@ -260,6 +304,7 @@
 .topbar { display: grid; grid-template-columns: 120px 1fr 120px; align-items: center; gap: 12px; margin: 8px 0 18px; }
 .topbar h1 { text-align: center; margin: 0; font-size: 1.6rem; }
 .spacer { width: 100%; }
+.cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 /* cards */
 .card { background: #fff; border: 1px solid #e7e7e7; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 6px 22px rgba(0,0,0,0.06); }
@@ -301,6 +346,22 @@ button.ghost { background: #f6f6f6; }
 /* actions */
 .actions { margin-top: 14px; display: flex; gap: 12px; align-items: center; }
 
+.toggle {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 0.9rem;
+  color: #111;
+}
+.toggle input { transform: translateY(1px); }
+
+.quick-steps { margin: 6px 0 0; padding-left: 20px; color: #555; }
+.quick-steps li { margin: 4px 0; }
+
 @media (max-width: 720px) {
   .row { flex-direction: column; align-items: stretch; }
 }
@@ -319,6 +380,8 @@ button.ghost { background: #f6f6f6; }
   .field input { background: #0f0f0f; border-color: #2a2a2a; color: #f1f1f1; }
   button { background: #1a1a1a; color: #f1f1f1; border-color: #2a2a2a; }
   button.ghost { background: #141414; }
+  .toggle { background: #111; border-color: #2a2a2a; color: #f1f1f1; }
+  .quick-steps { color: #d3d3d3; }
 
   .alert.error { background: #2b1414; border-color: #5a2a2a; color: #ffbdbd; }
 }

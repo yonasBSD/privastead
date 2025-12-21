@@ -4,7 +4,9 @@
   import { checkRequirements, type RequirementStatus } from "$lib/api";
 
   const STORAGE_KEY = "secluso-dev-settings";
+  const FIRST_TIME_KEY = "secluso-first-time";
   let devModeOn = false;
+  let firstTimeOn = false;
   let requirements: RequirementStatus[] = [];
   let checkingRequirements = true;
   let missingRequirements: RequirementStatus[] = [];
@@ -19,6 +21,17 @@
       devModeOn = false;
     }
   });
+
+  onMount(() => {
+    const raw = localStorage.getItem(FIRST_TIME_KEY);
+    if (raw === null) return;
+    firstTimeOn = raw === "true";
+  });
+
+  function toggleFirstTime() {
+    firstTimeOn = !firstTimeOn;
+    localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
+  }
 
   onMount(async () => {
     try {
@@ -43,6 +56,37 @@
     </div>
   </div>
   <p class="subtitle">Get your encrypted camera system online in two easy steps.</p>
+
+  {#if firstTimeOn}
+    <section class="card">
+      <div class="cardhead">
+        <h3>Need help?</h3>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>On</span>
+        </label>
+      </div>
+      <p class="muted">No scripts or command line steps needed.</p>
+      <ol class="quick-steps">
+        <li>Install the Secluso app from your app store.</li>
+        <li>Build the Raspberry Pi image and save the camera QR code.</li>
+        <li>Set up your server and save the server QR code.</li>
+        <li>Open the app and scan the server QR code, then the camera QR code.</li>
+      </ol>
+      <p class="muted">Need a server? A low cost option is Ionos VPS for around $2 per month. Just copy the login details from your provider and the app handles the setup. We are not affiliated with Ionos.</p>
+    </section>
+  {:else}
+    <section class="card">
+      <div class="cardhead">
+        <h3>Need help?</h3>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>Off</span>
+        </label>
+      </div>
+      <p class="muted">Turn this on for step by step guidance.</p>
+    </section>
+  {/if}
 
   {#if checkingRequirements}
     <section class="card requirements">
@@ -272,6 +316,14 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
 
 .card h3 { margin: 0; font-size: 1.1rem; }
 .card p { margin: 0; color: #444; }
+.cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+.quick-steps {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: #555;
+}
+.quick-steps li { margin: 4px 0; }
 
 .details { margin: 4px 0 0; padding-left: 18px; color: #555; }
 .details li { margin: 2px 0; }
@@ -300,5 +352,22 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
   .dev-dot { border-color: #1f2937; }
   .dev-dot.on { background: #22c55e; border-color: #16a34a; }
   .dev-dot.off { background: #ef4444; border-color: #dc2626; }
+}
+
+.toggle {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 0.9rem;
+  color: #111;
+}
+.toggle input { transform: translateY(1px); }
+
+@media (prefers-color-scheme: dark) {
+  .toggle { background: #111; border-color: #2a2a2a; color: #f6f6f6; }
 }
 </style>

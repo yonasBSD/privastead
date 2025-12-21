@@ -41,6 +41,7 @@
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
+  const FIRST_TIME_KEY = "secluso-first-time";
   const defaultDevSettings: DevSettings = {
     enabled: false,
     binariesSource: "main",
@@ -52,6 +53,7 @@
     githubToken: ""
   };
   let devSettings: DevSettings | null = null;
+  let firstTimeOn = false;
 
   // ui state
   let testing = false;
@@ -258,6 +260,17 @@
       devSettings = { ...defaultDevSettings };
     }
   });
+
+  onMount(() => {
+    const raw = localStorage.getItem(FIRST_TIME_KEY);
+    if (raw === null) return;
+    firstTimeOn = raw === "true";
+  });
+
+  function toggleFirstTime() {
+    firstTimeOn = !firstTimeOn;
+    localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
+  }
 </script>
 
 <main class="wrap">
@@ -275,6 +288,37 @@
     <h1>Provision Server (SSH)</h1>
     <div class="spacer"></div>
   </header>
+
+  {#if firstTimeOn}
+    <section class="card">
+      <div class="cardhead">
+        <h2>Need help?</h2>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>On</span>
+        </label>
+      </div>
+      <ol class="quick-steps">
+        <li>Enter the server login details you get from your provider and test the connection.</li>
+        <li>Set your server address and choose your service account key file.</li>
+        <li>Choose where to save the server QR code.</li>
+        <li>Click Provision Server, then scan this QR code in the app.</li>
+        <li>When you are done, open the app and scan the server QR code, then the camera QR code.</li>
+      </ol>
+      <p class="muted">Need a server? A low cost option is Ionos VPS for around $2 per month. Just copy the login details from your provider and the app does the rest. We are not affiliated with Ionos.</p>
+    </section>
+  {:else}
+    <section class="card">
+      <div class="cardhead">
+        <h2>Need help?</h2>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>Off</span>
+        </label>
+      </div>
+      <p class="muted">Turn this on for quick guidance.</p>
+    </section>
+  {/if}
 
   <section class="card">
     <h2>SSH Target</h2>
@@ -322,17 +366,21 @@
   <section class="card">
     <h2>Server Secrets</h2>
     <label class="field">
-      <span>Server URL for credentials</span>
-      <input placeholder="http:// or https://server.example.com" bind:value={credentialsServerUrl} />
+      <span>Server address for credentials</span>
+      <input placeholder="http:// your server IP is most common" bind:value={credentialsServerUrl} />
+      <span class="hint">Most people use http with an IP address. https or a domain is optional.</span>
     </label>
-    <div class="row">
+    <div class="row spaced">
       <label class="field grow">
-        <span>Service account key (JSON)</span>
+        <span class="label-row">
+          <span>Service account key (JSON)</span>
+          <a class="help-link" href="/service-account-help">Where to get this?</a>
+        </span>
         <input readonly placeholder="Choose service_account_key.json" bind:value={serviceAccountKeyPath} />
       </label>
       <button class="ghost" type="button" on:click={pickServiceAccountKey}>Choose File</button>
     </div>
-    <div class="row" style="margin-top:10px;">
+    <div class="row spaced">
       <label class="field grow">
         <span>User credentials QR code</span>
         <input readonly placeholder="Choose user_credentials_qr.png" bind:value={userCredentialsQrPath} />
@@ -361,6 +409,7 @@
 .topbar { display: grid; grid-template-columns: 120px 1fr 120px; align-items: center; gap: 12px; margin: 8px 0 18px; }
 .topbar h1 { text-align: center; margin: 0; font-size: 1.6rem; }
 .spacer { width: 100%; }
+.cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .card { background: #fff; border: 1px solid #e7e7e7; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 6px 22px rgba(0,0,0,0.06); }
 .card h2 { margin: 0 0 10px 0; font-size: 1.15rem; }
 .field { display: flex; flex-direction: column; gap: 6px; }
@@ -370,7 +419,11 @@
 .toggle, .radio { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
 .toggle input, .radio input { transform: translateY(1px); }
 .row { display: flex; gap: 10px; align-items: end; }
+.row.spaced { margin-top: 14px; }
 .grow { flex: 1; }
+.label-row { display: flex; align-items: center; gap: 10px; }
+.help-link { font-size: 0.9rem; color: #396cd8; text-decoration: none; }
+.help-link:hover { text-decoration: underline; }
 button { border: 1px solid #d7d7d7; background: #fff; color: #111; padding: 10px 14px; border-radius: 10px; cursor: pointer; }
 button:hover { border-color: #c6c6c6; }
 button.primary { background: #396cd8; color: #fff; border-color: #396cd8; }
@@ -382,9 +435,23 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .actions { margin-top: 10px; display: flex; gap: 12px; align-items: center; }
 .actions.bottom { margin-top: 16px; }
 .status { color: #444; }
-.hint { margin-top: 8px; color: #6b7280; font-size: 0.9rem; }
+.hint { margin-top: 8px; color: #0f172a; font-size: 0.9rem; font-weight: 700; }
 .alert { padding: 10px 12px; border-radius: 10px; border: 1px solid; }
 .alert.error { background: #fff4f4; border-color: #ffd6d6; color: #9a1b1b; }
+.toggle {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 0.9rem;
+  color: #111;
+}
+.toggle input { transform: translateY(1px); }
+.quick-steps { margin: 6px 0 0; padding-left: 20px; color: #555; }
+.quick-steps li { margin: 4px 0; }
 .overlay {
   position: fixed;
   inset: 0;
@@ -426,6 +493,8 @@ button:disabled { opacity: .6; cursor: not-allowed; }
   button.ghost { background: #141414; }
   .status { color: #dedede; }
   .alert.error { background: #2b1414; border-color: #5a2a2a; color: #ffbdbd; }
+  .toggle { background: #111; border-color: #2a2a2a; color: #f1f1f1; }
+  .quick-steps { color: #d3d3d3; }
   .modal { background: #121212; border-color: #2a2a2a; box-shadow: 0 20px 60px rgba(0,0,0,0.45); }
   .modal-title { color: #f8fafc; }
   .modal-body { color: #cbd5f5; }

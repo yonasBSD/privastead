@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
-  import { onDestroy, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { listenProvisionEvents, type ProvisionEvent } from "$lib/api";
@@ -38,6 +38,8 @@
   let stickToBottom = true;
   let pendingScroll = false;
   let updaterWarning: string | null = null;
+  let firstTimeOn = false;
+  const FIRST_TIME_KEY = "secluso-first-time";
 
   $: {
     runId = $page.url.searchParams.get("runId") ?? "";
@@ -139,6 +141,17 @@
   $: completedSteps = steps.filter((s) => stepStatus[s.key] === "ok").length;
   $: totalSteps = steps.length;
   $: progress = totalSteps ? Math.round((completedSteps / totalSteps) * 100) : 0;
+
+  onMount(() => {
+    const raw = localStorage.getItem(FIRST_TIME_KEY);
+    if (raw === null) return;
+    firstTimeOn = raw === "true";
+  });
+
+  function toggleFirstTime() {
+    firstTimeOn = !firstTimeOn;
+    localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
+  }
 </script>
 
 <main class="wrap">
@@ -167,6 +180,35 @@
     <h1>{mode === "image" ? "Image Build Status" : "Server Provision Status"}</h1>
     <div class="spacer"></div>
   </header>
+
+  {#if firstTimeOn}
+    <section class="card">
+      <div class="cardhead">
+        <h2>Need help?</h2>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>On</span>
+        </label>
+      </div>
+      <p class="muted">Keep this window open while Secluso runs the steps in the background.</p>
+      <ol class="quick-steps">
+        <li>Keep this screen open while the steps run.</li>
+        <li>Check logs if anything looks stuck.</li>
+        <li>When done, go back and continue the next step in the app.</li>
+      </ol>
+    </section>
+  {:else}
+    <section class="card">
+      <div class="cardhead">
+        <h2>Need help?</h2>
+        <label class="toggle">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span>Off</span>
+        </label>
+      </div>
+      <p class="muted">Turn this on for quick guidance.</p>
+    </section>
+  {/if}
 
   {#if !runId}
     <section class="card empty">
@@ -248,6 +290,7 @@
   .topbar { display: grid; grid-template-columns: 120px 1fr 120px; align-items: center; gap: 12px; margin: 8px 0 18px; }
   .topbar h1 { text-align: center; margin: 0; font-size: 1.6rem; color: #f8fafc; }
   .spacer { width: 100%; }
+  .cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
   .back {
     appearance: none;
@@ -268,6 +311,20 @@
   .card { background: #0f172a; border: 1px solid #1f2937; border-radius: 16px; padding: 16px; margin-bottom: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); }
   .card h2 { margin: 0 0 10px 0; font-size: 1.15rem; color: #f8fafc; }
   .muted { color: #94a3b8; margin: 0; }
+  .toggle {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid #1f2937;
+    border-radius: 10px;
+    background: #111827;
+    font-size: 0.9rem;
+    color: #e5e7eb;
+  }
+  .toggle input { transform: translateY(1px); }
+  .quick-steps { margin: 6px 0 0; padding-left: 20px; color: #94a3b8; }
+  .quick-steps li { margin: 4px 0; }
 
   .hero { border: none; padding: 18px; background: linear-gradient(135deg, #0f172a, #111827); }
   .hero-inner { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 18px; align-items: center; }
