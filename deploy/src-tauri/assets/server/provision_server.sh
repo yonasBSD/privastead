@@ -31,6 +31,7 @@ emit "info" "config" "OVERWRITE=$OVERWRITE"
 emit "info" "config" "FIRST_INSTALL=$FIRST_INSTALL"
 emit "info" "config" "SIG_KEYS=${SIG_KEYS:-}"
 emit "info" "config" "NETWORK_TYPE=${NETWORK_TYPE:-https}"
+emit "info" "config" "GITHUB_TOKEN=${GITHUB_TOKEN:+set}"
 
 UPDATE_INTERVAL_SECS="${UPDATE_INTERVAL_SECS:-1800}"
 
@@ -51,8 +52,13 @@ ${SUDO} apt-get install -y --no-install-recommends ca-certificates curl jq unzip
 emit "info" "install" "Ensuring install dirs..."
 ${SUDO} mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/server/user_credentials" "$INSTALL_PREFIX/manifest"
 
+GITHUB_CURL_ARGS=()
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  GITHUB_CURL_ARGS=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+fi
+
 emit "info" "download" "Resolving latest release tag..."
-tag="$(curl -fsSL "https://api.github.com/repos/$OWNER_REPO/releases/latest" | jq -r '.tag_name // empty')"
+tag="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "https://api.github.com/repos/$OWNER_REPO/releases/latest" | jq -r '.tag_name // empty')"
 if [[ -z "$tag" || "$tag" == "null" ]]; then
   emit "error" "download" "Missing tag name for $OWNER_REPO"
   exit 1
@@ -66,6 +72,7 @@ emit "info" "build" "Building updater from source..."
 cd "$WORK"
 git -c protocol.file.allow=always submodule update --init --depth 1 update
 cd "$WORK/update"
+export RUSTUP_DISABLE_SELF_UPDATE=1
 curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
 export PATH="$HOME/.cargo/bin:$PATH"
 rustup toolchain install 1.85.0
@@ -93,7 +100,7 @@ if [[ -n "${SIG_KEYS:-}" ]]; then
   done
 fi
 
-${SUDO} timeout 90s "$INSTALL_PREFIX/bin/$updater_name" --component server --interval-secs 60 --github-timeout-secs 20 --github-repo "$OWNER_REPO"$SIG_ARGS || true
+${SUDO} env ${GITHUB_TOKEN:+GITHUB_TOKEN=$GITHUB_TOKEN} timeout 90s "$INSTALL_PREFIX/bin/$updater_name" --component server --interval-secs 60 --github-timeout-secs 20 --github-repo "$OWNER_REPO"$SIG_ARGS || true
 if [[ ! -x "$INSTALL_PREFIX/bin/secluso-server" ]]; then
   emit "error" "install" "secluso-server missing after updater run"
   exit 1
@@ -107,13 +114,13 @@ case "$arch" in
   *) emit "warn" "arch" "Unsupported arch for bundled updater: $arch"; archdir="" ;;
 esac
 if [[ -n "$archdir" ]]; then
-  rel_json="$(curl -fsSL "https://api.github.com/repos/$OWNER_REPO/releases/tags/$tag")"
+  rel_json="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "https://api.github.com/repos/$OWNER_REPO/releases/tags/$tag")"
   asset_name="$(echo "$rel_json" | jq -r '
     .assets | map(select(.name | test("^secluso-v.*\\.zip$"))) | if length==0 then empty else .[0].name end
   ')"
   if [[ -n "$asset_name" && "$asset_name" != "null" ]]; then
     rm -rf /tmp/secluso_bundle && mkdir -p /tmp/secluso_bundle
-    curl -fL -o /tmp/secluso_bundle.zip "https://github.com/$OWNER_REPO/releases/download/$tag/$asset_name"
+    curl -fL "${GITHUB_CURL_ARGS[@]}" -o /tmp/secluso_bundle.zip "https://github.com/$OWNER_REPO/releases/download/$tag/$asset_name"
     unzip -o /tmp/secluso_bundle.zip -d /tmp/secluso_bundle >/dev/null
     root="/tmp/secluso_bundle"
     maybe="$(find /tmp/secluso_bundle -maxdepth 2 -type f -name manifest.json | head -n 1 || true)"
@@ -172,6 +179,7 @@ Type=simple
 ExecStart=$INSTALL_PREFIX/bin/$updater_name --component server --interval-secs $UPDATE_INTERVAL_SECS --github-timeout-secs 20 --restart-unit $SERVER_UNIT --github-repo $OWNER_REPO${SIG_ARGS}
 Restart=always
 RestartSec=2
+${GITHUB_TOKEN:+Environment=GITHUB_TOKEN=$GITHUB_TOKEN}
 EOFUPD
   fi
 

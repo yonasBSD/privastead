@@ -103,6 +103,7 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
           .map(|k| SigKey { name: k.name, github_user: k.github_user })
           .collect()
       }),
+      github_token: req.github_token.clone().filter(|v| !v.trim().is_empty()),
     }),
   };
 
@@ -130,7 +131,8 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
       .clone()
       .unwrap_or_else(|| "secluso/secluso".to_string());
     let sig_keys = secluso.sig_keys.as_deref();
-    generate_secluso_credentials(app, run_id, work_path, &repo, sig_keys)?;
+    let github_token = secluso.github_token.as_deref();
+    generate_secluso_credentials(app, run_id, work_path, &repo, sig_keys, github_token)?;
   }
   step_ok(app, run_id, "credentials");
 

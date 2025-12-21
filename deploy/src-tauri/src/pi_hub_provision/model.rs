@@ -13,6 +13,7 @@ pub struct Secluso {
   pub etc_dir: Option<String>,
   pub repo: Option<String>,
   pub sig_keys: Option<Vec<SigKey>>,
+  pub github_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

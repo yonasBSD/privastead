@@ -14,6 +14,7 @@
     key1User: string;
     key2Name: string;
     key2User: string;
+    githubToken: string;
   };
 
   const STORAGE_KEY = "secluso-dev-settings";
@@ -27,7 +28,8 @@
     key1Name: "",
     key1User: "",
     key2Name: "",
-    key2User: ""
+    key2User: "",
+    githubToken: ""
   };
 
   let devSettings: DevSettings = { ...defaultSettings };
@@ -69,7 +71,7 @@
 
     {#if devSettings.enabled}
       <div class="section block">
-        <div class="block-title">Wi-Fi</div>
+        <div class="block-title">Wi-Fi <span class="badge">Optional</span></div>
         <label class="field">
           <span>Wi-Fi SSID</span>
           <input placeholder="dev-wifi" bind:value={devSettings.wifiSsid} />
@@ -88,7 +90,7 @@
       </div>
 
       <div class="section block">
-        <div class="block-title">Binaries</div>
+        <div class="block-title">Binaries <span class="badge">Optional</span></div>
         <label class="radio-row">
           <input type="radio" name="binaries" value="main" bind:group={devSettings.binariesSource} />
           <span>Use main release binaries</span>
@@ -122,6 +124,15 @@
           <p class="help">Both key names and GitHub users are required for custom repos.</p>
         {/if}
       </div>
+
+      <div class="section block">
+        <div class="block-title">GitHub Token <span class="badge">Optional</span></div>
+        <label class="field">
+          <span>Token</span>
+          <input type="password" placeholder="ghp_..." bind:value={devSettings.githubToken} />
+        </label>
+        <p class="help">Used for GitHub API requests to avoid rate limits.</p>
+      </div>
     {/if}
   </section>
 
@@ -142,6 +153,7 @@
   .section { display: grid; gap: 6px; margin-bottom: 12px; }
   .section.block { padding: 10px; border-radius: 12px; border: 1px solid #e6e6e6; background: #f9f9f9; }
   .block-title { font-weight: 700; margin-bottom: 2px; color: #1f2937; }
+  .badge { display: inline-block; margin-left: 6px; padding: 2px 6px; border-radius: 999px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; background: #eef2ff; color: #334155; border: 1px solid #dbe3ff; }
   .toggle { display: inline-flex; gap: 8px; align-items: center; }
   .radio-row { display: flex; gap: 8px; align-items: center; }
   .field { display: flex; flex-direction: column; gap: 6px; }
@@ -162,5 +174,6 @@
     .block-title { color: #e2e8f0; }
     button { border-color: #2a2a2a; color: #f6f6f6; background: #111; }
     button.primary { background: #396cd8; border-color: #396cd8; color: #fff; }
+    .badge { background: #1c2333; color: #cbd5f5; border-color: #2b3550; }
   }
 </style>

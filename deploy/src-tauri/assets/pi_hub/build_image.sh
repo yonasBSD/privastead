@@ -5,8 +5,9 @@ set -euo pipefail
 WORK=/work
 OUT=/out
 CFG="$WORK/config.json"
+GITHUB_CURL_ARGS=()
 
-sh() { echo "+ $*" >&2; "$@"; }
+run() { echo "+ $*" >&2; "$@"; }
 jqr() { jq -r "$1" "$CFG"; }
 
 emit() {
@@ -31,7 +32,7 @@ download_github_release_asset() {
 
   echo "+ Fetching release metadata: $api" >&2
   local url
-  url="$(curl -fsSL "$api" | jq -r --arg name "$asset_name" '
+  url="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "$api" | jq -r --arg name "$asset_name" '
     .assets[]? | select(.name==$name) | .browser_download_url
   ')"
 
@@ -42,7 +43,7 @@ download_github_release_asset() {
   fi
 
   echo "+ Downloading asset: $url -> $out_path" >&2
-  curl -fL -o "$out_path" "$url"
+  curl -fL "${GITHUB_CURL_ARGS[@]}" -o "$out_path" "$url"
 }
 
 BASE_IMAGE="$(jqr '.base_image')"
@@ -60,6 +61,7 @@ if [[ "$HAS_SECLUSO" == "true" ]]; then
   SECLUSO_INSTALL_DIR="$(jqr '.secluso.install_dir // "/opt/secluso"')"
   SECLUSO_ETC_DIR="$(jqr '.secluso.etc_dir // "/etc/secluso"')"
   SECLUSO_REPO="$(jqr '.secluso.repo // "secluso/secluso"')"
+  SECLUSO_GITHUB_TOKEN="$(jqr '.secluso.github_token // empty')"
 fi
 
 PKGS="$(jqr '(.apt.packages // []) | join(" ")')"
@@ -72,7 +74,7 @@ emit "info" "base_image" "Preparing base image..."
 if [[ "$BASE_IMAGE" == http://* || "$BASE_IMAGE" == https://* ]]; then
   fname="$(basename "$BASE_IMAGE")"
   if [[ ! -f "$fname" ]]; then
-    sh curl -L -o "$fname" "$BASE_IMAGE"
+    run curl -L -o "$fname" "$BASE_IMAGE"
   fi
   BASE_PATH="$WORK/$fname"
 else
@@ -82,19 +84,19 @@ else
 fi
 IMG="$BASE_PATH"
 if [[ "$IMG" == *.xz ]]; then
-  if [[ ! -f "${IMG%.xz}" ]]; then sh xz -dk "$IMG"; fi
+  if [[ ! -f "${IMG%.xz}" ]]; then run xz -dk "$IMG"; fi
   IMG="${IMG%.xz}"
 fi
 
 WORK_IMG="$WORK/working.img"
-sh cp -f "$IMG" "$WORK_IMG"
+run cp -f "$IMG" "$WORK_IMG"
 
 # grow image and root partition
 # add 4g to the image file
-sh truncate -s +4G "$WORK_IMG"
+run truncate -s +4G "$WORK_IMG"
 
 # expand partition 2 to fill the image
-sh parted -s "$WORK_IMG" resizepart 2 100%
+run parted -s "$WORK_IMG" resizepart 2 100%
 
 # mount partitions by offset
 # read partition offsets and sizes
@@ -113,7 +115,7 @@ fi
 MNT="$WORK/mnt"
 BOOT="$MNT/boot"
 ROOT="$MNT/root"
-sh mkdir -p "$BOOT" "$ROOT"
+run mkdir -p "$BOOT" "$ROOT"
 
 # create loop devices for boot and root
 LOOP_ROOT="$(losetup --find --show --offset "$ROOT_OFF" --sizelimit "$ROOT_SIZE" "$WORK_IMG")"
@@ -123,29 +125,29 @@ echo "+ LOOP_ROOT=$LOOP_ROOT (rootfs)" >&2
 echo "+ LOOP_BOOT=$LOOP_BOOT (bootfs)" >&2
 
 # grow ext4 to fill the root partition
-sh e2fsck -f -y "$LOOP_ROOT"
-sh resize2fs "$LOOP_ROOT"
+run e2fsck -f -y "$LOOP_ROOT"
+run resize2fs "$LOOP_ROOT"
 cleanup() {
   set +e
-  sh umount -R "$ROOT/dev" 2>/dev/null || true
-  sh umount -R "$ROOT/proc" 2>/dev/null || true
-  sh umount -R "$ROOT/sys" 2>/dev/null || true
-  sh umount "$BOOT" 2>/dev/null || true
-  sh umount "$ROOT" 2>/dev/null || true
-  sh losetup -d "$LOOP_BOOT" 2>/dev/null || true
-  sh losetup -d "$LOOP_ROOT" 2>/dev/null || true
+  run umount -R "$ROOT/dev" 2>/dev/null || true
+  run umount -R "$ROOT/proc" 2>/dev/null || true
+  run umount -R "$ROOT/sys" 2>/dev/null || true
+  run umount "$BOOT" 2>/dev/null || true
+  run umount "$ROOT" 2>/dev/null || true
+  run losetup -d "$LOOP_BOOT" 2>/dev/null || true
+  run losetup -d "$LOOP_ROOT" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 emit "info" "mount" "Mounting partitions..."
 
 # mount root and boot
-sh mount "$LOOP_ROOT" "$ROOT"
-sh mount "$LOOP_BOOT" "$BOOT"
+run mount "$LOOP_ROOT" "$ROOT"
+run mount "$LOOP_BOOT" "$BOOT"
 
 # enable ssh for headless setup
 if [[ "$SSH_ENABLE" == "true" ]]; then
-  sh touch "$BOOT/ssh" || true
+  run touch "$BOOT/ssh" || true
 fi
 
 if [[ "$HAS_WIFI" == "true" ]]; then
@@ -210,18 +212,18 @@ fi
 
 # create user and password in chroot
 # bind mounts for chroot
-sh mount --bind /dev "$ROOT/dev"
-sh mount --bind /proc "$ROOT/proc"
-sh mount --bind /sys "$ROOT/sys"
+run mount --bind /dev "$ROOT/dev"
+run mount --bind /proc "$ROOT/proc"
+run mount --bind /sys "$ROOT/sys"
 
 # copy dns settings into chroot
 if [[ -f /etc/resolv.conf ]]; then
-  sh cp -f /etc/resolv.conf "$ROOT/etc/resolv.conf"
+  run cp -f /etc/resolv.conf "$ROOT/etc/resolv.conf"
 fi
 
 # user and password
-sh chroot "$ROOT" bash -lc "id -u '$USER_NAME' >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo '$USER_NAME'"
-sh chroot "$ROOT" bash -lc "echo '$USER_NAME:$USER_PASS' | chpasswd"
+run chroot "$ROOT" bash -lc "id -u '$USER_NAME' >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo '$USER_NAME'"
+run chroot "$ROOT" bash -lc "echo '$USER_NAME:$USER_PASS' | chpasswd"
 
 # write a build marker for easy verification
 build_stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -234,69 +236,95 @@ if [[ -d "$ROOT/home/$USER_NAME" ]]; then
 build_time=$build_stamp
 hostname=$HOSTNAME
 EOF
-  sh chroot "$ROOT" bash -lc "chown $USER_NAME:$USER_NAME /home/$USER_NAME/secluso-build.txt"
+  run chroot "$ROOT" bash -lc "chown $USER_NAME:$USER_NAME /home/$USER_NAME/secluso-build.txt"
 fi
 
 # ssh authorized_keys
 AUTH_KEYS="$WORK/authorized_keys"
 jq -r '.ssh.authorized_keys[]? // empty' "$CFG" > "$AUTH_KEYS" || true
 if [[ -s "$AUTH_KEYS" ]]; then
-  sh chroot "$ROOT" bash -lc "install -d -m 700 -o '$USER_NAME' -g '$USER_NAME' /home/'$USER_NAME'/.ssh"
-  sh install -m 600 "$AUTH_KEYS" "$ROOT/home/$USER_NAME/.ssh/authorized_keys"
-  sh chroot "$ROOT" bash -lc "chown '$USER_NAME:$USER_NAME' /home/'$USER_NAME'/.ssh/authorized_keys"
+  run chroot "$ROOT" bash -lc "install -d -m 700 -o '$USER_NAME' -g '$USER_NAME' /home/'$USER_NAME'/.ssh"
+  run install -m 600 "$AUTH_KEYS" "$ROOT/home/$USER_NAME/.ssh/authorized_keys"
+  run chroot "$ROOT" bash -lc "chown '$USER_NAME:$USER_NAME' /home/'$USER_NAME'/.ssh/authorized_keys"
   # disable password ssh if keys exist
   if [[ -f "$ROOT/etc/ssh/sshd_config" ]]; then
-    sh chroot "$ROOT" bash -lc "sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config || true"
+    run chroot "$ROOT" bash -lc "sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config || true"
   fi
 fi
 
 # install apt packages inside image
 if [[ -n "$PKGS" ]]; then
   emit "info" "packages" "Installing base packages..."
-  sh chroot "$ROOT" bash -lc "apt-get update"
-  sh chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS"
+  run chroot "$ROOT" bash -lc "apt-get update"
+  run chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS"
 fi
 
 if [[ "$HAS_SECLUSO" == "true" ]]; then
   BUNDLE_ASSET_RE='^secluso-v.*\.zip$'
   ARCHDIR_AARCH64="aarch64-unknown-linux-gnu"
+  BUNDLE_ZIP="$WORK/secluso_bundle.zip"
 
   emit "info" "secluso" "Installing Secluso hub binaries and config..."
   # create dirs
-  sh mkdir -p "$ROOT${SECLUSO_INSTALL_DIR}/bin"
-  sh mkdir -p "$ROOT${SECLUSO_ETC_DIR}"
-  sh chmod 700 "$ROOT${SECLUSO_ETC_DIR}" || true
-  sh chroot "$ROOT" bash -lc "chmod 700 '${SECLUSO_ETC_DIR}' || true"
+  run mkdir -p "$ROOT${SECLUSO_INSTALL_DIR}/bin"
+  run mkdir -p "$ROOT${SECLUSO_ETC_DIR}"
+  run chmod 700 "$ROOT${SECLUSO_ETC_DIR}" || true
+  run chroot "$ROOT" bash -lc "chmod 700 '${SECLUSO_ETC_DIR}' || true"
 
   # runtime dir for state and logs
-  sh mkdir -p "$ROOT/var/lib/secluso"
-  sh chmod 700 "$ROOT/var/lib/secluso"
+  run mkdir -p "$ROOT/var/lib/secluso"
+  run chmod 700 "$ROOT/var/lib/secluso"
 
   # copy camera secret into runtime dir
   if [[ -f "$WORK/camera_secret" ]]; then
-    sh install -m 600 "$WORK/camera_secret" "$ROOT/var/lib/secluso/camera_secret"
+    run install -m 600 "$WORK/camera_secret" "$ROOT/var/lib/secluso/camera_secret"
   fi
 
-  emit "info" "secluso" "Building updater from source..."
-  apt-get update
-  apt-get install -y --no-install-recommends git pkg-config libssl-dev
-  curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
-  export PATH="/root/.cargo/bin:$PATH"
-  rustup toolchain install 1.85.0
+  GITHUB_CURL_ARGS=()
+  if [[ -n "${SECLUSO_GITHUB_TOKEN:-}" ]]; then
+    GITHUB_CURL_ARGS=(-H "Authorization: Bearer ${SECLUSO_GITHUB_TOKEN}")
+  fi
 
-  tag="$(curl -fsSL "https://api.github.com/repos/${SECLUSO_REPO}/releases/latest" | jq -r '.tag_name // empty')"
+  tag="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "https://api.github.com/repos/${SECLUSO_REPO}/releases/latest" | jq -r '.tag_name // empty')"
   [[ -n "$tag" && "$tag" != "null" ]] || { echo "Missing tag name for ${SECLUSO_REPO}" >&2; exit 1; }
-  rm -rf /tmp/secluso-src
-  git clone --depth 1 --branch "$tag" "https://github.com/${SECLUSO_REPO}.git" /tmp/secluso-src
-  cd /tmp/secluso-src
-  git -c protocol.file.allow=always submodule update --init --depth 1 update
-  cd /tmp/secluso-src/update
-  cargo +1.85.0 build --release -p secluso-update
 
-  updater_bin="target/release/secluso-update"
-  [[ -x "$updater_bin" ]] || { echo "Missing secluso-update binary after build" >&2; exit 1; }
-  updater_name="$(basename "$updater_bin")"
-  sh install -m 0755 "$updater_bin" "$ROOT${SECLUSO_INSTALL_DIR}/bin/$updater_name"
+  if [[ -f "$BUNDLE_ZIP" ]]; then
+    emit "info" "secluso" "Installing updater from provided bundle..."
+    rm -rf /tmp/secluso_bundle && mkdir -p /tmp/secluso_bundle
+    unzip -o "$BUNDLE_ZIP" -d /tmp/secluso_bundle >/dev/null
+    root="/tmp/secluso_bundle"
+    maybe="$(find /tmp/secluso_bundle -maxdepth 2 -type f -name manifest.json | head -n 1 || true)"
+    if [[ -n "$maybe" ]]; then
+      root="$(dirname "$maybe")"
+    fi
+    if [[ -x "$root/$ARCHDIR_AARCH64/secluso-update" ]]; then
+      run install -m 0755 "$root/$ARCHDIR_AARCH64/secluso-update" "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-update"
+      updater_name="secluso-update"
+    else
+      echo "Missing secluso-update in provided bundle" >&2
+      exit 1
+    fi
+  else
+    emit "info" "secluso" "Building updater from source..."
+    apt-get update
+    apt-get install -y --no-install-recommends git pkg-config libssl-dev build-essential nettle-dev
+    export RUSTUP_DISABLE_SELF_UPDATE=1
+    curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+    export PATH="/root/.cargo/bin:$PATH"
+    rustup toolchain install 1.85.0
+
+    rm -rf /tmp/secluso-src
+    git clone --depth 1 --branch "$tag" "https://github.com/${SECLUSO_REPO}.git" /tmp/secluso-src
+    cd /tmp/secluso-src
+    git -c protocol.file.allow=always submodule update --init --depth 1 update
+    cd /tmp/secluso-src/update
+    cargo +1.85.0 build --release -p secluso-update
+
+    updater_bin="target/release/secluso-update"
+    [[ -x "$updater_bin" ]] || { echo "Missing secluso-update binary after build" >&2; exit 1; }
+    updater_name="$(basename "$updater_bin")"
+    run install -m 0755 "$updater_bin" "$ROOT${SECLUSO_INSTALL_DIR}/bin/$updater_name"
+  fi
 
   SIG_ARGS=""
   if jq -e '.secluso.sig_keys | length > 0' "$CFG" >/dev/null 2>&1; then
@@ -305,35 +333,43 @@ if [[ "$HAS_SECLUSO" == "true" ]]; then
     done < <(jq -r '.secluso.sig_keys[] | "\(.name):\(.github_user)"' "$CFG")
   fi
 
-  sh chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && './${updater_name}' --help 2>/dev/null | grep -q -- '--component' || exit 1"
-  sh chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && timeout 90s './${updater_name}' --component raspberry_camera_hub --interval-secs 60 --github-timeout-secs 20 --github-repo '${SECLUSO_REPO}'${SIG_ARGS} || true"
+  run chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && './${updater_name}' --help 2>/dev/null | grep -q -- '--component' || exit 1"
+  if [[ -f "$BUNDLE_ZIP" ]]; then
+    run chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && ${SECLUSO_GITHUB_TOKEN:+GITHUB_TOKEN='${SECLUSO_GITHUB_TOKEN}'} timeout 90s './${updater_name}' --component raspberry_camera_hub --once --bundle-path '${BUNDLE_ZIP}' --interval-secs 60 --github-timeout-secs 20 --github-repo '${SECLUSO_REPO}'${SIG_ARGS} || true"
+  else
+    run chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && ${SECLUSO_GITHUB_TOKEN:+GITHUB_TOKEN='${SECLUSO_GITHUB_TOKEN}'} timeout 90s './${updater_name}' --component raspberry_camera_hub --once --interval-secs 60 --github-timeout-secs 20 --github-repo '${SECLUSO_REPO}'${SIG_ARGS} || true"
+  fi
 
   if [[ ! -x "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-raspberry-camera-hub" ]]; then
     emit "warn" "secluso" "hub binary missing after updater run"
   fi
 
-  emit "info" "secluso" "Installing bundled updater from release..."
-  rel_json="$(curl -fsSL "https://api.github.com/repos/${SECLUSO_REPO}/releases/tags/${tag}")"
-  asset_name="$(echo "$rel_json" | jq -r --arg re "$BUNDLE_ASSET_RE" '
-    .assets | map(select(.name | test($re))) | if length==0 then empty else .[0].name end
-  ')"
-  if [[ -n "$asset_name" && "$asset_name" != "null" ]]; then
-    download_github_release_asset "$SECLUSO_REPO" "tag" "$tag" "$asset_name" "/tmp/secluso_bundle.zip"
-    rm -rf /tmp/secluso_bundle && mkdir -p /tmp/secluso_bundle
-    unzip -o /tmp/secluso_bundle.zip -d /tmp/secluso_bundle >/dev/null
-    root="/tmp/secluso_bundle"
-    maybe="$(find /tmp/secluso_bundle -maxdepth 2 -type f -name manifest.json | head -n 1 || true)"
-    if [[ -n "$maybe" ]]; then
-      root="$(dirname "$maybe")"
-    fi
-    if [[ -x "$root/$ARCHDIR_AARCH64/secluso-update" ]]; then
-      sh install -m 0755 "$root/$ARCHDIR_AARCH64/secluso-update" "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-update"
-      updater_name="secluso-update"
-    else
-      emit "warn" "secluso" "bundled secluso-update missing for arm64"
-    fi
+  if [[ -f "$BUNDLE_ZIP" ]]; then
+    emit "info" "secluso" "Bundled updater already installed from provided bundle."
   else
-    emit "warn" "secluso" "No release bundle asset found for updater"
+    emit "info" "secluso" "Installing bundled updater from release..."
+    rel_json="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "https://api.github.com/repos/${SECLUSO_REPO}/releases/tags/${tag}")"
+    asset_name="$(echo "$rel_json" | jq -r --arg re "$BUNDLE_ASSET_RE" '
+      .assets | map(select(.name | test($re))) | if length==0 then empty else .[0].name end
+    ')"
+    if [[ -n "$asset_name" && "$asset_name" != "null" ]]; then
+      download_github_release_asset "$SECLUSO_REPO" "tag" "$tag" "$asset_name" "/tmp/secluso_bundle.zip"
+      rm -rf /tmp/secluso_bundle && mkdir -p /tmp/secluso_bundle
+      unzip -o /tmp/secluso_bundle.zip -d /tmp/secluso_bundle >/dev/null
+      root="/tmp/secluso_bundle"
+      maybe="$(find /tmp/secluso_bundle -maxdepth 2 -type f -name manifest.json | head -n 1 || true)"
+      if [[ -n "$maybe" ]]; then
+        root="$(dirname "$maybe")"
+      fi
+      if [[ -x "$root/$ARCHDIR_AARCH64/secluso-update" ]]; then
+        run install -m 0755 "$root/$ARCHDIR_AARCH64/secluso-update" "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-update"
+        updater_name="secluso-update"
+      else
+        emit "warn" "secluso" "bundled secluso-update missing for arm64"
+      fi
+    else
+      emit "warn" "secluso" "No release bundle asset found for updater"
+    fi
   fi
 
   # systemd unit
@@ -361,8 +397,8 @@ RestartSec=1
 WantedBy=multi-user.target
 EOF
 
-  sh chroot "$ROOT" bash -lc "mkdir -p /etc/systemd/system/multi-user.target.wants"
-  sh chroot "$ROOT" bash -lc "ln -sf /etc/systemd/system/secluso_camera_hub.service /etc/systemd/system/multi-user.target.wants/secluso_camera_hub.service"
+  run chroot "$ROOT" bash -lc "mkdir -p /etc/systemd/system/multi-user.target.wants"
+  run chroot "$ROOT" bash -lc "ln -sf /etc/systemd/system/secluso_camera_hub.service /etc/systemd/system/multi-user.target.wants/secluso_camera_hub.service"
 
   # enable wifi radio on boot
   cat > "$ROOT/etc/systemd/system/secluso-wifi-radio.service" <<EOF
@@ -379,7 +415,7 @@ ExecStart=/usr/bin/nmcli radio wifi on
 [Install]
 WantedBy=multi-user.target
 EOF
-  sh chroot "$ROOT" bash -lc "ln -sf /etc/systemd/system/secluso-wifi-radio.service /etc/systemd/system/multi-user.target.wants/secluso-wifi-radio.service"
+  run chroot "$ROOT" bash -lc "ln -sf /etc/systemd/system/secluso-wifi-radio.service /etc/systemd/system/multi-user.target.wants/secluso-wifi-radio.service"
 
   if [[ -x "$ROOT${SECLUSO_INSTALL_DIR}/bin/$updater_name" ]]; then
     UPDATE_INTERVAL_SECS="1800"
@@ -398,7 +434,7 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 EOF
-    sh chroot "$ROOT" bash -lc "ln -sf /etc/systemd/system/secluso-updater.service /etc/systemd/system/multi-user.target.wants/secluso-updater.service"
+    run chroot "$ROOT" bash -lc "ln -sf /etc/systemd/system/secluso-updater.service /etc/systemd/system/multi-user.target.wants/secluso-updater.service"
   else
     emit "warn" "updater" "secluso-updater not found, skipping auto updates"
   fi
@@ -412,7 +448,7 @@ install_rpicam_apps() {
   echo "+ Installing custom rpicam-apps from $repo_url@$repo_ref" >&2
 
   # deps
-  sh chroot "$ROOT" bash -lc "apt-get update"
+  run chroot "$ROOT" bash -lc "apt-get update"
 
   install_pinned_libcamera() {
   local ver="0.4.0+rpt20250213-1"
@@ -422,10 +458,10 @@ install_rpicam_apps() {
   echo "+ Pinning libcamera stack to $ver" >&2
 
   # make sure curl and ca certs exist
-  sh chroot "$ROOT" bash -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl"
+  run chroot "$ROOT" bash -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl"
 
   # pin 0.4 to avoid apt pulling 0.5
-  sh chroot "$ROOT" bash -lc "cat > /etc/apt/preferences.d/secluso-libcamera <<'EOF'
+  run chroot "$ROOT" bash -lc "cat > /etc/apt/preferences.d/secluso-libcamera <<'EOF'
 Package: libcamera0.4 libcamera-ipa libcamera-dev libcamera-tools python3-libcamera
 Pin: version 0.4.*
 Pin-Priority: 1001
@@ -436,13 +472,13 @@ Pin-Priority: -10
 EOF"
 
   # remove newer libcamera packages
-  sh chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get remove -y 'libcamera0.5*' 'libcamera-ipa' 'libcamera-tools' 'libcamera-dev' 'python3-libcamera*' || true; apt-get autoremove -y || true"
+  run chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get remove -y 'libcamera0.5*' 'libcamera-ipa' 'libcamera-tools' 'libcamera-dev' 'python3-libcamera*' || true; apt-get autoremove -y || true"
 
   # install deps needed for 0.4
-  sh chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libpisp1 liblttng-ust1 libunwind8 libevent-2.1-7 libevent-pthreads-2.1-7 libsdl2-2.0-0"
+  run chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libpisp1 liblttng-ust1 libunwind8 libevent-2.1-7 libevent-pthreads-2.1-7 libsdl2-2.0-0"
 
   # download pinned debs
-  sh chroot "$ROOT" bash -lc "set -eux;
+  run chroot "$ROOT" bash -lc "set -eux;
     cd /tmp;
     curl -fsSL -O '$base/libcamera0.4_${ver}_${arch}.deb';
     curl -fsSL -O '$base/libcamera-ipa_${ver}_${arch}.deb';
@@ -452,19 +488,19 @@ EOF"
   "
 
   # install debs
-  sh chroot "$ROOT" bash -lc "set -eux;
+  run chroot "$ROOT" bash -lc "set -eux;
     dpkg -i /tmp/libcamera*_${ver}_${arch}.deb /tmp/python3-libcamera*_${ver}_${arch}.deb;
   " || {
     echo "libcamera install failed, dumping versions" >&2
-    sh chroot "$ROOT" bash -lc "dpkg -l | grep -E 'libcamera|libpisp|lttng|unwind|libevent|libsdl2' || true" >&2
+    run chroot "$ROOT" bash -lc "dpkg -l | grep -E 'libcamera|libpisp|lttng|unwind|libevent|libsdl2' || true" >&2
     exit 1
   }
 
   # hold libcamera packages
-  sh chroot "$ROOT" bash -lc "apt-mark hold libcamera0.4 libcamera-ipa libcamera-dev libcamera-tools python3-libcamera || true"
+  run chroot "$ROOT" bash -lc "apt-mark hold libcamera0.4 libcamera-ipa libcamera-dev libcamera-tools python3-libcamera || true"
 }
   install_pinned_libcamera
-  sh chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  run chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     git ca-certificates \
     libepoxy-dev libjpeg-dev libtiff5-dev libpng-dev \
     cmake libboost-program-options-dev libdrm-dev libexif-dev \
@@ -472,17 +508,17 @@ EOF"
     pkg-config"
 
   # clone for each build
-  sh chroot "$ROOT" bash -lc "rm -rf '$src_dir' && mkdir -p /opt"
-  sh chroot "$ROOT" bash -lc "git clone --depth 1 '$repo_url' '$src_dir'"
+  run chroot "$ROOT" bash -lc "rm -rf '$src_dir' && mkdir -p /opt"
+  run chroot "$ROOT" bash -lc "git clone --depth 1 '$repo_url' '$src_dir'"
 
   # pin revision if provided
   if [[ -n "$repo_ref" && "$repo_ref" != "main" ]]; then
-    sh chroot "$ROOT" bash -lc "cd '$src_dir' && git fetch --depth 1 origin '$repo_ref' || true; git checkout '$repo_ref'"
+    run chroot "$ROOT" bash -lc "cd '$src_dir' && git fetch --depth 1 origin '$repo_ref' || true; git checkout '$repo_ref'"
   fi
 
   # build and install
-  sh chroot "$ROOT" bash -lc "cd '$src_dir' && rm -rf build"
-  sh chroot "$ROOT" bash -lc "cd '$src_dir' && meson setup build \
+  run chroot "$ROOT" bash -lc "cd '$src_dir' && rm -rf build"
+  run chroot "$ROOT" bash -lc "cd '$src_dir' && meson setup build \
     -Denable_libav=disabled \
     -Denable_drm=enabled \
     -Denable_egl=disabled \
@@ -491,24 +527,24 @@ EOF"
     -Denable_tflite=disabled \
     -Denable_hailo=disabled"
 
-  sh chroot "$ROOT" bash -lc "cd '$src_dir' && meson compile -C build -j 1"
+  run chroot "$ROOT" bash -lc "cd '$src_dir' && meson compile -C build -j 1"
 
-  if ! sh chroot "$ROOT" bash -lc "test -s '$src_dir/build/apps/rpicam-vid'"; then
+  if ! run chroot "$ROOT" bash -lc "test -s '$src_dir/build/apps/rpicam-vid'"; then
     emit "error" "rpicam" "rpicam-vid build failed or output is empty"
-    sh chroot "$ROOT" bash -lc "ls -la '$src_dir/build/apps' || true"
+    run chroot "$ROOT" bash -lc "ls -la '$src_dir/build/apps' || true"
     exit 1
   fi
-  sh chroot "$ROOT" bash -lc "cd '$src_dir' && meson install -C build"
+  run chroot "$ROOT" bash -lc "cd '$src_dir' && meson install -C build"
 
   # copy binaries if install did not place them in path
-  sh chroot "$ROOT" bash -lc "mkdir -p /usr/local/bin"
-  if ! sh chroot "$ROOT" bash -lc "command -v rpicam-vid >/dev/null 2>&1"; then
+  run chroot "$ROOT" bash -lc "mkdir -p /usr/local/bin"
+  if ! run chroot "$ROOT" bash -lc "command -v rpicam-vid >/dev/null 2>&1"; then
     emit "warn" "rpicam" "rpicam-vid not in path, copying from build/apps"
-    sh chroot "$ROOT" bash -lc "if [ -d '$src_dir/build/apps' ]; then install -m 0755 '$src_dir'/build/apps/rpicam-* /usr/local/bin/; fi"
+    run chroot "$ROOT" bash -lc "if [ -d '$src_dir/build/apps' ]; then install -m 0755 '$src_dir'/build/apps/rpicam-* /usr/local/bin/; fi"
   fi
 
   # write a small install report for debugging
-  sh chroot "$ROOT" bash -lc "cat > /etc/secluso-rpicam-install.txt <<'EOF'
+  run chroot "$ROOT" bash -lc "cat > /etc/secluso-rpicam-install.txt <<'EOF'
 build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 repo_rev=$(cd /opt/rpicam-apps && git rev-parse --short HEAD 2>/dev/null || echo unknown)
 local_bin=$(ls -1 /usr/local/bin/rpicam-* 2>/dev/null | wc -l || true)
@@ -518,7 +554,7 @@ sizes_build=$(stat -c '%n %s' /opt/rpicam-apps/build/apps/rpicam-* 2>/dev/null |
 EOF"
 
   # write version marker if available
-  sh chroot "$ROOT" bash -lc "command -v rpicam-hello >/dev/null 2>&1 && rpicam-hello --version >/opt/rpicam-apps.installed.version 2>/dev/null || true"
+  run chroot "$ROOT" bash -lc "command -v rpicam-hello >/dev/null 2>&1 && rpicam-hello --version >/opt/rpicam-apps.installed.version 2>/dev/null || true"
 }
 
 # run install
@@ -528,10 +564,10 @@ install_rpicam_apps "https://github.com/secluso/rpicam-apps.git" "main"
 
 # done, flush and unmount before copying
 emit "info" "output" "Finalizing filesystem..."
-sh sync
+run sync
 cleanup
 trap - EXIT
 
 emit "info" "output" "Writing final image..."
-sh cp -f "$WORK_IMG" "$OUT/$OUT_NAME"
+run cp -f "$WORK_IMG" "$OUT/$OUT_NAME"
 echo "Wrote image: $OUT/$OUT_NAME"

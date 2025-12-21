@@ -12,6 +12,7 @@ pub fn generate_secluso_credentials(
   work_path: &Path,
   repo: &str,
   sig_keys: Option<&[crate::pi_hub_provision::model::SigKey]>,
+  github_token: Option<&str>,
 ) -> Result<()> {
   // use a docker volume so we avoid host bind mounts during credential creation
   let volume_name = format!("secluso-cred-{}", run_id);
@@ -32,10 +33,18 @@ pub fn generate_secluso_credentials(
   volume_cmd.args(["volume", "create", &volume_name]);
   run_with_output(app, run_id, "credentials", &mut volume_cmd)?;
 
+  let github_token_env = github_token
+    .filter(|v| !v.trim().is_empty())
+    .map(|v| format!("GITHUB_TOKEN={}", v));
+
   let mut cmd = Command::new("docker");
   cmd.args(["run", "--rm"])
     .args(["-v", &format!("{}:/out", volume_name)])
-    .args(["-e", &format!("SIG_KEYS={}", sig_keys_env)])
+    .args(["-e", &format!("SIG_KEYS={}", sig_keys_env)]);
+  if let Some(env) = &github_token_env {
+    cmd.args(["-e", env]);
+  }
+  cmd
     .arg("rust:1.82-bookworm")
     .args(["bash", "-lc"])
     .arg(format!(
@@ -43,6 +52,7 @@ pub fn generate_secluso_credentials(
 set -euo pipefail
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl jq unzip git pkg-config libssl-dev nettle-dev clang libclang-dev
+export RUSTUP_DISABLE_SELF_UPDATE=1
 curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
 if [[ -f /usr/local/cargo/env ]]; then
   . /usr/local/cargo/env
@@ -52,7 +62,7 @@ fi
 export PATH="/usr/local/cargo/bin:/root/.cargo/bin:$PATH"
 rustup toolchain install 1.85.0
 
-curl -fsSL -o /tmp/release.json "https://api.github.com/repos/{repo}/releases/latest" || {{
+curl -fsSL ${{GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"}} -o /tmp/release.json "https://api.github.com/repos/{repo}/releases/latest" || {{
   echo "Failed to fetch release metadata" >&2
   exit 1
 }}
@@ -61,6 +71,13 @@ if [[ -z "$tag" || "$tag" == "null" ]]; then
   echo "Missing tag name in release metadata" >&2
   exit 1
 fi
+
+asset_name="$(jq -r '.assets | map(select(.name | test("^secluso-v.*\\.zip$"))) | if length==0 then empty else .[0].name end' /tmp/release.json)"
+if [[ -z "$asset_name" || "$asset_name" == "null" ]]; then
+  echo "Missing bundle asset name in release metadata" >&2
+  exit 1
+fi
+curl -fL ${{GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"}} -o /tmp/secluso_bundle.zip "https://github.com/{repo}/releases/download/$tag/$asset_name"
 
 rm -rf /tmp/secluso-src
 git clone --depth 1 --branch "$tag" "https://github.com/{repo}.git" /tmp/secluso-src
@@ -91,9 +108,9 @@ if [[ -n "${{SIG_KEYS:-}}" ]]; then
   done
 fi
 
-"$updater_exec" --component config_tool --once --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
+"$updater_exec" --component config_tool --once --bundle-path /tmp/secluso_bundle.zip --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
 
-tool="$(find /tmp/secluso-bin -maxdepth 1 -type f \( -name 'secluso-config-tool' -o -name 'secluso-config' \) | head -n 1)"
+tool="$(find /tmp/secluso-bin /opt/secluso/bin -maxdepth 1 -type f \( -name 'secluso-config-tool' -o -name 'secluso-config' \) | head -n 1)"
 if [[ -z "$tool" ]]; then
   echo "Missing config tool binary after updater run" >&2
   ls -la /tmp/secluso-bin >&2 || true
@@ -101,6 +118,8 @@ if [[ -z "$tool" ]]; then
 fi
 
 "$tool" --generate-camera-secret --dir /out
+
+cp /tmp/secluso_bundle.zip /out/secluso_bundle.zip
 "#,
       repo = repo
     ));
@@ -143,6 +162,7 @@ pub fn generate_user_credentials_only(
   server_url: &str,
   repo: &str,
   sig_keys: Option<&[crate::pi_hub_provision::model::SigKey]>,
+  github_token: Option<&str>,
 ) -> Result<()> {
   // run the config tool with only the user credentials command
   let volume_name = format!("secluso-cred-{}", run_id);
@@ -162,10 +182,18 @@ pub fn generate_user_credentials_only(
   volume_cmd.args(["volume", "create", &volume_name]);
   run_with_output(app, run_id, "credentials", &mut volume_cmd)?;
 
+  let github_token_env = github_token
+    .filter(|v| !v.trim().is_empty())
+    .map(|v| format!("GITHUB_TOKEN={}", v));
+
   let mut cmd = Command::new("docker");
   cmd.args(["run", "--rm"])
     .args(["-v", &format!("{}:/out", volume_name)])
-    .args(["-e", &format!("SIG_KEYS={}", sig_keys_env)])
+    .args(["-e", &format!("SIG_KEYS={}", sig_keys_env)]);
+  if let Some(env) = &github_token_env {
+    cmd.args(["-e", env]);
+  }
+  cmd
     .arg("rust:1.82-bookworm")
     .args(["bash", "-lc"])
     .arg(format!(
@@ -173,6 +201,7 @@ pub fn generate_user_credentials_only(
 set -euo pipefail
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl jq unzip git pkg-config libssl-dev nettle-dev clang libclang-dev
+export RUSTUP_DISABLE_SELF_UPDATE=1
 curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
 if [[ -f /usr/local/cargo/env ]]; then
   . /usr/local/cargo/env
@@ -182,12 +211,19 @@ fi
 export PATH="/usr/local/cargo/bin:/root/.cargo/bin:$PATH"
 rustup toolchain install 1.85.0
 
-curl -fsSL -o /tmp/release.json "https://api.github.com/repos/{repo}/releases/latest"
+curl -fsSL ${{GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"}} -o /tmp/release.json "https://api.github.com/repos/{repo}/releases/latest"
 tag="$(jq -r '.tag_name // empty' /tmp/release.json)"
 if [[ -z "$tag" || "$tag" == "null" ]]; then
   echo "Missing tag name in release metadata" >&2
   exit 1
 fi
+
+asset_name="$(jq -r '.assets | map(select(.name | test("^secluso-v.*\\.zip$"))) | if length==0 then empty else .[0].name end' /tmp/release.json)"
+if [[ -z "$asset_name" || "$asset_name" == "null" ]]; then
+  echo "Missing bundle asset name in release metadata" >&2
+  exit 1
+fi
+curl -fL ${{GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"}} -o /tmp/secluso_bundle.zip "https://github.com/{repo}/releases/download/$tag/$asset_name"
 
 rm -rf /tmp/secluso-src
 git clone --depth 1 --branch "$tag" "https://github.com/{repo}.git" /tmp/secluso-src
@@ -218,9 +254,9 @@ if [[ -n "${{SIG_KEYS:-}}" ]]; then
   done
 fi
 
-"$updater_exec" --component config_tool --once --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
+"$updater_exec" --component config_tool --once --bundle-path /tmp/secluso_bundle.zip --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
 
-tool="$(find /tmp/secluso-bin -maxdepth 1 -type f \( -name 'secluso-config-tool' -o -name 'secluso-config' \) | head -n 1)"
+tool="$(find /tmp/secluso-bin /opt/secluso/bin -maxdepth 1 -type f \( -name 'secluso-config-tool' -o -name 'secluso-config' \) | head -n 1)"
 if [[ -z "$tool" ]]; then
   echo "Missing config tool binary after updater run" >&2
   ls -la /tmp/secluso-bin >&2 || true
@@ -228,6 +264,8 @@ if [[ -z "$tool" ]]; then
 fi
 
 "$tool" --generate-user-credentials --server-addr "{server_url}" --dir /out
+
+cp /tmp/secluso_bundle.zip /out/secluso_bundle.zip
 "#,
       repo = repo,
       server_url = server_url

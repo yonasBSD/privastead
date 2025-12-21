@@ -37,6 +37,7 @@
     key1User: string;
     key2Name: string;
     key2User: string;
+    githubToken: string;
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
@@ -47,7 +48,8 @@
     key1Name: "",
     key1User: "",
     key2Name: "",
-    key2User: ""
+    key2User: "",
+    githubToken: ""
   };
   let devSettings: DevSettings | null = null;
 
@@ -216,6 +218,7 @@
       },
       sigKeys: sigKeys.length ? sigKeys : undefined,
       binariesRepo: useDevRepo ? devSettings?.binariesRepo.trim() : undefined,
+      githubToken: devSettings?.githubToken.trim() ? devSettings?.githubToken.trim() : undefined,
       overwrite: overwriteInstall
     };
 

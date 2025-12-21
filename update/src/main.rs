@@ -4,6 +4,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use docopt::Docopt;
 use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use semver::Version;
 use sha2::{Digest, Sha256};
 use serde_json;
@@ -95,7 +96,7 @@ const USAGE: &str = r#"
 Secluso updater.
 
 Usage:
-  secluso-update --component COMPONENT [--once] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]...
+  secluso-update --component COMPONENT [--once] [--bundle-path PATH] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]...
   secluso-update (--help | -h)
   secluso-update (--version | -v)
 
@@ -109,6 +110,7 @@ Options:
   --github-repo <OWNER/REPO>  GitHub repo to poll for releases [default: secluso/secluso].
   --sig-key <NAME:GITHUB_USER>  Signature label + GitHub user (repeatable).
   --once                     Run a single update check then exit.
+  --bundle-path PATH         Use a local bundle zip instead of downloading from GitHub.
   --version, -v              Show tool version.
   --help, -h                 Show this screen.
 "#;
@@ -122,6 +124,7 @@ struct Args {
     flag_github_repo: String,
     flag_sig_key: Vec<String>,
     flag_once: bool,
+    flag_bundle_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,7 +268,7 @@ fn main() -> ! {
             eprintln!("Update check failed: {:#}", e);
             std::process::exit(1);
         }
-        return std::process::exit(0);
+        std::process::exit(0);
     }
 
     loop {
@@ -292,10 +295,27 @@ fn check_update(args: &Args) -> Result<()> {
     };
     println!("Current Version = {current_version}");
 
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("SECLUSO_GITHUB_TOKEN"))
+        .ok()
+        .and_then(|v| {
+            let trimmed = v.trim().to_string();
+            if trimmed.is_empty() { None } else { Some(trimmed) }
+        });
+
+    let mut headers = HeaderMap::new();
+    if let Some(token) = github_token {
+        let value = format!("Bearer {}", token);
+        if let Ok(hv) = HeaderValue::from_str(&value) {
+            headers.insert(AUTHORIZATION, hv);
+        }
+    }
+
     let client = Client::builder()
         .user_agent("secluso-updater")
         .redirect(reqwest::redirect::Policy::limited(10))
         .timeout(Duration::from_secs(args.flag_github_timeout_secs))
+        .default_headers(headers)
         .build()?;
 
     let github_repo = if args.flag_github_repo.trim().is_empty() {
@@ -321,32 +341,46 @@ fn check_update(args: &Args) -> Result<()> {
     // Utilize a tokenless immutability check using release.immutable from the latest release
     require_release_is_immutable(&release)?;
 
-    // Select bundle asset (zip)
-    let bundle = release
-        .assets
-        .iter()
-        .find(|a| is_bundle_zip_asset(&a.name))
-        .cloned()
-        .ok_or_else(|| anyhow!("could not find bundle zip asset in latest release"))?;
+    let bundle_path = args
+        .flag_bundle_path
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty());
 
-    println!(
-        "Bundle Asset: name={} id={} size={} url={}",
-        bundle.name, bundle.id, bundle.size, bundle.browser_download_url
-    );
+    let zip_bytes: Bytes = if let Some(path) = bundle_path {
+        println!("Using local bundle: {}", path);
+        Bytes::from(
+            fs::read(path).with_context(|| format!("Failed reading bundle at {}", path))?,
+        )
+    } else {
+        // Select bundle asset (zip)
+        let bundle = release
+            .assets
+            .iter()
+            .find(|a| is_bundle_zip_asset(&a.name))
+            .cloned()
+            .ok_or_else(|| anyhow!("could not find bundle zip asset in latest release"))?;
 
-    // Require GitHub to provide the sha256 digest for this asset
-    let bundle_digest = bundle
-        .digest
-        .as_deref()
-        .ok_or_else(|| anyhow!("github asset {} missing digest field", bundle.name))?;
+        println!(
+            "Bundle Asset: name={} id={} size={} url={}",
+            bundle.name, bundle.id, bundle.size, bundle.browser_download_url
+        );
 
-    // Download zip bytes
-    let zip_bytes = fetch_bytes(&client, &bundle.browser_download_url)
-        .with_context(|| format!("Failed downloading {}", bundle.name))?;
-    println!("Downloaded zip bytes: {}", zip_bytes.len());
+        // Require GitHub to provide the sha256 digest for this asset
+        let bundle_digest = bundle
+            .digest
+            .as_deref()
+            .ok_or_else(|| anyhow!("github asset {} missing digest field", bundle.name))?;
 
-    // Verify downloaded bytes match GitHub's recorded sha256 digest for this asset
-    require_asset_sha256_digest_matches_download(&bundle.name, bundle_digest, &zip_bytes)?;
+        // Download zip bytes
+        let zip_bytes = fetch_bytes(&client, &bundle.browser_download_url)
+            .with_context(|| format!("Failed downloading {}", bundle.name))?;
+        println!("Downloaded zip bytes: {}", zip_bytes.len());
+
+        // Verify downloaded bytes match GitHub's recorded sha256 digest for this asset
+        require_asset_sha256_digest_matches_download(&bundle.name, bundle_digest, &zip_bytes)?;
+        zip_bytes
+    };
 
     // Open zip, read manifest + signature files
     let mut zip =

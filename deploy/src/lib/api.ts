@@ -28,6 +28,7 @@ export interface ServerPlan {
   overwrite?: boolean;
   sigKeys?: { name: string; githubUser: string }[];
   binariesRepo?: string;
+  githubToken?: string;
 }
 
 export interface JobStart {
@@ -55,6 +56,7 @@ export interface ImageBuildRequest {
   wifi?: { country: string; ssid: string; psk: string };
   binariesRepo?: string;
   sigKeys?: { name: string; githubUser: string }[];
+  githubToken?: string;
 }
 
 export async function testServerSsh(target: SshTarget): Promise<void> {

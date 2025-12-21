@@ -62,4 +62,5 @@ pub struct ServerPlan {
   pub overwrite: Option<bool>,
   pub sig_keys: Option<Vec<SigKey>>,
   pub binaries_repo: Option<String>,
+  pub github_token: Option<String>,
 }

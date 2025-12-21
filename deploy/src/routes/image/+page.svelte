@@ -43,6 +43,7 @@
     key1User: string;
     key2Name: string;
     key2User: string;
+    githubToken: string;
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
@@ -61,7 +62,8 @@
     key1Name: "",
     key1User: "",
     key2Name: "",
-    key2User: ""
+    key2User: "",
+    githubToken: ""
   };
 
   // progress state
@@ -138,6 +140,7 @@
         qrOutputPath,
         imageOutputPath,
         binariesRepo: devSettings.binariesSource === "custom" ? devSettings.binariesRepo.trim() : undefined,
+        githubToken: devSettings.enabled && devSettings.githubToken.trim() ? devSettings.githubToken.trim() : undefined,
         sigKeys:
           devSettings.binariesSource === "custom"
             ? [
@@ -170,18 +173,19 @@
       const parsed = JSON.parse(raw) as Partial<DevSettings>;
       devSettings = { ...devSettings, ...parsed };
     } catch {
-      devSettings = {
-        enabled: false,
-        wifiSsid: "",
-        wifiPsk: "",
-        wifiCountry: "",
-        binariesSource: "main",
-        binariesRepo: "",
-        key1Name: "",
-        key1User: "",
-        key2Name: "",
-        key2User: ""
-      };
+        devSettings = {
+          enabled: false,
+          wifiSsid: "",
+          wifiPsk: "",
+          wifiCountry: "",
+          binariesSource: "main",
+          binariesRepo: "",
+          key1Name: "",
+          key1User: "",
+          key2Name: "",
+          key2User: "",
+          githubToken: ""
+        };
     }
   });
 </script>

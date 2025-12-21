@@ -97,6 +97,7 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
       &secrets.server_url,
       &owner_repo,
       sig_keys.as_deref(),
+      plan.github_token.as_deref(),
     )?;
 
     let sa_path = PathBuf::from(&secrets.service_account_key_path);
@@ -127,7 +128,7 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
 
   // step 3 run the remote provision script
   step_start(app, run_id, "remote", "Running remote installer");
-  let envs = vec![
+  let mut envs = vec![
     ("INSTALL_PREFIX", install_prefix.to_string()),
     ("OWNER_REPO", owner_repo.to_string()),
     ("SERVER_UNIT", server_unit.to_string()),
@@ -148,6 +149,9 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
         .join(","),
     ),
   ];
+  if let Some(token) = plan.github_token.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+    envs.push(("GITHUB_TOKEN", token));
+  }
 
   exec_remote_script_streaming(
     app,

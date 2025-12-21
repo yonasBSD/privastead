@@ -32,6 +32,7 @@ pub struct BuildImageRequest {
   wifi: Option<Wifi>,
   binaries_repo: Option<String>,
   sig_keys: Option<Vec<SigKey>>,
+  github_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,7 +71,7 @@ pub async fn generate_user_credentials(
     let work_dir = shared_temp_dir("secluso-user-creds").context("creating temp work dir")?;
     let work_path = work_dir.path();
 
-    generate_user_credentials_only(&app, run_id, work_path, &req.server_url, "secluso/secluso", None)?;
+    generate_user_credentials_only(&app, run_id, work_path, &req.server_url, "secluso/secluso", None, None)?;
 
     let out_path = Path::new(&req.output_path);
     if let Some(parent) = out_path.parent() {
