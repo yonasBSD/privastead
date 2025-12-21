@@ -436,7 +436,7 @@ impl IpCamera {
             livestream_writer,
         )
         .await?;
-        fmp4.finish_header().await?;
+        fmp4.finish_header(None).await?;
         Self::copy(&mut fmp4, None, frame_queue).await?;
 
         // FIXME: do we need to wait for teardown here?

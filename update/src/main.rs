@@ -95,7 +95,7 @@ const USAGE: &str = r#"
 Secluso updater.
 
 Usage:
-  secluso-update --component COMPONENT [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo OWNER/REPO] [--sig-key NAME:GITHUB_USER]...
+  secluso-update --component COMPONENT [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]...
   secluso-update (--help | -h)
   secluso-update (--version | -v)
 
@@ -106,8 +106,8 @@ Options:
                              If omitted, no service is restarted.
   --interval-secs N          Poll interval seconds [default: 60].
   --github-timeout-secs N    HTTP timeout seconds [default: 20].
-  --github-repo OWNER/REPO   GitHub repo to poll for releases [default: secluso/secluso].
-  --sig-key NAME:GITHUB_USER Signature label + GitHub user (repeatable).
+  --github-repo <OWNER/REPO>  GitHub repo to poll for releases [default: secluso/secluso].
+  --sig-key <NAME:GITHUB_USER>  Signature label + GitHub user (repeatable).
   --version, -v              Show tool version.
   --help, -h                 Show this screen.
 "#;
@@ -287,8 +287,14 @@ fn check_update(args: &Args) -> Result<()> {
         .timeout(Duration::from_secs(args.flag_github_timeout_secs))
         .build()?;
 
+    let github_repo = if args.flag_github_repo.trim().is_empty() {
+        DEFAULT_OWNER_REPO.to_string()
+    } else {
+        args.flag_github_repo.clone()
+    };
+
     // Fetch latest release metadata
-    let release = fetch_latest_release(&client, &args.flag_github_repo)?;
+    let release = fetch_latest_release(&client, &github_repo)?;
     println!("Latest Tag = {}", release.tag_name);
     if let Some(p) = &release.published_at {
         println!("Published At = {}", p);
@@ -539,10 +545,44 @@ fn fetch_bytes(client: &Client, url: &str) -> Result<Bytes> {
         .bytes()?)
 }
 
+fn zip_root_prefix(zip: &mut ZipArchive<Cursor<Bytes>>) -> Option<String> {
+    let mut prefix: Option<String> = None;
+    for i in 0..zip.len() {
+        let name = match zip.by_index(i) {
+            Ok(f) => f.name().to_string(),
+            Err(_) => continue,
+        };
+        let mut parts = name.splitn(2, '/');
+        let top = parts.next().unwrap_or("");
+        let rest = parts.next();
+        if rest.is_none() {
+            return None;
+        }
+        if top.is_empty() {
+            return None;
+        }
+        match &prefix {
+            None => prefix = Some(top.to_string()),
+            Some(existing) if existing != top => return None,
+            _ => {}
+        }
+    }
+    prefix.map(|p| format!("{}/", p))
+}
+
 fn read_zip_file(zip: &mut ZipArchive<Cursor<Bytes>>, path: &str) -> Result<Vec<u8>> {
-    let mut f = zip
-        .by_name(path)
-        .with_context(|| format!("zip missing entry {}", path))?;
+    let mut f = match zip.by_name(path) {
+        Ok(f) => f,
+        Err(_) => {
+            if let Some(prefix) = zip_root_prefix(zip) {
+                let alt = format!("{}{}", prefix, path);
+                zip.by_name(&alt)
+                    .with_context(|| format!("zip missing entry {} (also tried {})", path, alt))?
+            } else {
+                return Err(anyhow!("zip missing entry {}", path));
+            }
+        }
+    };
     let mut buf = Vec::with_capacity(f.size() as usize);
     f.read_to_end(&mut buf)?;
     Ok(buf)

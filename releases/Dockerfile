@@ -15,6 +15,13 @@ ARG BINARY_FILE_NAME
 
 WORKDIR /app
 
+# Install build deps for crates that rely on system crypto libs (e.g., nettle-sys).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      clang pkg-config nettle-dev; \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy the files from host into the builder
 COPY --from=proj . .
 WORKDIR /app/${CRATE_NAME}

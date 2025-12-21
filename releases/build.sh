@@ -75,8 +75,8 @@ build_and_manifest() {
         CRATE_NAME="camera_hub"
       fi
 
-      # Skip raspberry-only tools (raspberry camera hub, reset, update) unless building the raspberry triple
-      if [[ "$PKG" == "raspberry_camera_hub" || "$PKG" == "reset" || "$PKG" == "update" ]]; then
+      # Skip raspberry-only tools (raspberry camera hub, reset) unless building the raspberry triple
+      if [[ "$PKG" == "raspberry_camera_hub" || "$PKG" == "reset" ]]; then
         if [[ "$TRIPLE" != "aarch64-unknown-linux-gnu" ]]; then
           echo "==> [run $RUN_ID] SKIP $PKG for $TRIPLE (raspberry-only)"
           continue

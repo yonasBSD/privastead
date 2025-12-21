@@ -208,4 +208,4 @@ Secluso currently uses:
 - `raspberry_camera_hub` → crate camera_hub with `--features raspberry`
 - `ip_camera_hub` → crate camera_hub with `--features ip`
 
-Raspberry-only tools (`raspberry_camera_hub`, `reset`, `update`) are **skipped** for non-ARM64 triples.
+Raspberry-only tools (`raspberry_camera_hub`, `reset`) are **skipped** for non-ARM64 triples.

@@ -49,6 +49,7 @@ pub(crate) struct Wifi {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SigKey {
   pub name: String,
   pub github_user: String,
