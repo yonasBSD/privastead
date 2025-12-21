@@ -1,0 +1,71 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+export type SshAuth =
+  | { kind: "password"; password: string }
+  | { kind: "keyfile"; path: string }
+  | { kind: "keytext"; text: string };
+
+export interface SudoSpec {
+  mode: "same" | "password";
+  password?: string;
+}
+
+export interface SshTarget {
+  host: string;
+  port: number;
+  user: string;
+  auth: SshAuth;
+  sudo: SudoSpec;
+}
+
+export interface ServerPlan {
+  useDocker: boolean;
+  protectPackages: boolean;
+  autoUpdater: { enable: boolean };
+  secrets?: { serviceAccountKeyPath: string; serverUrl: string; userCredentialsQrPath: string };
+  overwrite?: boolean;
+  sigKeys?: { name: string; githubUser: string }[];
+  binariesRepo?: string;
+}
+
+export interface JobStart {
+  run_id: string;
+}
+
+export type ProvisionEvent =
+  | { type: "step_start"; run_id: string; step: string; title: string }
+  | { type: "step_ok"; run_id: string; step: string }
+  | { type: "step_error"; run_id: string; step: string; message: string }
+  | { type: "log"; run_id: string; level: "info" | "warn" | "error"; step?: string; line: string }
+  | { type: "done"; run_id: string; ok: boolean };
+
+export interface ImageBuildRequest {
+  variant?: "official" | "diy";
+  qrOutputPath: string;
+  imageOutputPath: string;
+  wifi?: { country: string; ssid: string; psk: string };
+  binariesRepo?: string;
+  sigKeys?: { name: string; githubUser: string }[];
+}
+
+export async function testServerSsh(target: SshTarget): Promise<void> {
+  await invoke("test_server_ssh", { target });
+}
+
+export async function provisionServer(
+  target: SshTarget,
+  plan: ServerPlan
+): Promise<JobStart> {
+  return invoke("provision_server", { target, plan });
+}
+
+export async function buildImage(req: ImageBuildRequest): Promise<JobStart> {
+  return invoke("build_image", { req });
+}
+
+export async function listenProvisionEvents(
+  handler: (event: ProvisionEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ProvisionEvent>("provision:event", (evt) => handler(evt.payload));
+}
