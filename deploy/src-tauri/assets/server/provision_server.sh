@@ -30,6 +30,7 @@ emit "info" "config" "ENABLE_UPDATER=$ENABLE_UPDATER"
 emit "info" "config" "OVERWRITE=$OVERWRITE"
 emit "info" "config" "FIRST_INSTALL=$FIRST_INSTALL"
 emit "info" "config" "SIG_KEYS=${SIG_KEYS:-}"
+emit "info" "config" "NETWORK_TYPE=${NETWORK_TYPE:-https}"
 
 UPDATE_INTERVAL_SECS="${UPDATE_INTERVAL_SECS:-1800}"
 
@@ -151,7 +152,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_PREFIX/server
-ExecStart=$INSTALL_PREFIX/bin/secluso-server
+ExecStart=$INSTALL_PREFIX/bin/secluso-server --network-type=${NETWORK_TYPE:-https}
 Restart=always
 RestartSec=1
 Environment=RUST_LOG=info

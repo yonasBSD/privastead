@@ -68,6 +68,14 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
 
   // step 2 generate and upload secrets on first install
   step_start(app, run_id, "secrets", "Generating and uploading secrets");
+  let mut network_type = "https".to_string();
+  if let Some(secrets) = plan.secrets.as_ref() {
+    let url = secrets.server_url.trim();
+    if url.starts_with("http://") {
+      network_type = "http".to_string();
+    }
+  }
+
   if first_install {
     let secrets = plan.secrets.as_ref().context("Missing secrets config")?;
 
@@ -125,6 +133,7 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
     ("SERVER_UNIT", server_unit.to_string()),
     ("UPDATER_SERVICE", updater_service.to_string()),
     ("UPDATE_INTERVAL_SECS", update_interval_secs.to_string()),
+    ("NETWORK_TYPE", network_type),
     ("SUDO_CMD", sudo_cmd.clone()),
     ("ENABLE_UPDATER", if plan.auto_updater.enable { "1".to_string() } else { "0".to_string() }),
     ("OVERWRITE", if overwrite { "1".to_string() } else { "0".to_string() }),

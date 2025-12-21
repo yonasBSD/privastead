@@ -149,12 +149,19 @@
     }
     if (!userCredentialsQrPath.trim()) { errorMsg = "Choose where to save the QR code."; return; }
 
-    const serverUrl = credentialsServerUrl.trim()
-      ? credentialsServerUrl.trim()
+    const rawServerUrl = credentialsServerUrl.trim();
+    const serverUrl = rawServerUrl
+      ? rawServerUrl.startsWith("http://") || rawServerUrl.startsWith("https://")
+        ? rawServerUrl
+        : `https://${rawServerUrl}`
       : host.trim()
       ? `https://${host.trim()}`
       : "";
     if (!serverUrl) { errorMsg = "Server URL is required to generate credentials."; return; }
+    if (serverUrl.toLowerCase().startsWith("https://")) {
+      errorMsg = "HTTPS is not supported yet for automatic setups. Use http:// for now.";
+      return;
+    }
     const useDevRepo = devSettings?.enabled && devSettings.binariesSource === "custom";
     if (useDevRepo && !devSettings?.binariesRepo.trim()) {
       errorMsg = "Dev settings repo is required for a custom updater.";
