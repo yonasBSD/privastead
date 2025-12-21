@@ -201,7 +201,7 @@ Secluso currently uses:
   
 - all
   - `all`: all of the above for both architectures
-  - `release`: update, raspberry_camera_hub, ip_camera_hub, config_tool, server
+  - `release`: update, raspberry_camera_hub, config_tool, server
 
 **Package -> crate/feature mapping** (done in the script):
 

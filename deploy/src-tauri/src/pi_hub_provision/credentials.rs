@@ -67,9 +67,6 @@ git clone --depth 1 --branch "$tag" "https://github.com/{repo}.git" /tmp/secluso
 cd /tmp/secluso-src
 git -c protocol.file.allow=always submodule update --init --depth 1 update
 cd /tmp/secluso-src/update
-while read -r f; do
-  sed -i 's|OWNER/REPO|<OWNER/REPO>|g; s|NAME:GITHUB_USER|<NAME:GITHUB_USER>|g; s|--sig-key <NAME:GITHUB_USER> |--sig-key <NAME:GITHUB_USER>  |g; s|--github-repo <OWNER/REPO> |--github-repo <OWNER/REPO>  |g' "$f"
-done < <(grep -rl -e "OWNER/REPO" -e "NAME:GITHUB_USER" -e "--sig-key <NAME:GITHUB_USER>" -e "--github-repo <OWNER/REPO>" . || true)
 cargo +1.85.0 build --release -p secluso-update
 
 updater_bin="target/release/secluso-update"
@@ -94,7 +91,7 @@ if [[ -n "${{SIG_KEYS:-}}" ]]; then
   done
 fi
 
-"$updater_exec" --component config_tool --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
+"$updater_exec" --component config_tool --once --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
 
 tool="$(find /tmp/secluso-bin -maxdepth 1 -type f \( -name 'secluso-config-tool' -o -name 'secluso-config' \) | head -n 1)"
 if [[ -z "$tool" ]]; then
@@ -197,9 +194,6 @@ git clone --depth 1 --branch "$tag" "https://github.com/{repo}.git" /tmp/secluso
 cd /tmp/secluso-src
 git -c protocol.file.allow=always submodule update --init --depth 1 update
 cd /tmp/secluso-src/update
-while read -r f; do
-  sed -i 's|OWNER/REPO|<OWNER/REPO>|g; s|NAME:GITHUB_USER|<NAME:GITHUB_USER>|g; s|--sig-key <NAME:GITHUB_USER> |--sig-key <NAME:GITHUB_USER>  |g; s|--github-repo <OWNER/REPO> |--github-repo <OWNER/REPO>  |g' "$f"
-done < <(grep -rl -e "OWNER/REPO" -e "NAME:GITHUB_USER" -e "--sig-key <NAME:GITHUB_USER>" -e "--github-repo <OWNER/REPO>" . || true)
 cargo +1.85.0 build --release -p secluso-update
 
 updater_bin="target/release/secluso-update"
@@ -224,7 +218,7 @@ if [[ -n "${{SIG_KEYS:-}}" ]]; then
   done
 fi
 
-"$updater_exec" --component config_tool --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
+"$updater_exec" --component config_tool --once --interval-secs 60 --github-timeout-secs 20 --github-repo "{repo}"${{SIG_ARGS}}
 
 tool="$(find /tmp/secluso-bin -maxdepth 1 -type f \( -name 'secluso-config-tool' -o -name 'secluso-config' \) | head -n 1)"
 if [[ -z "$tool" ]]; then

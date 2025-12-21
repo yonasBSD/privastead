@@ -381,7 +381,7 @@ elif [[ "$TARGET" == "all" ]]; then
   TRIPLES=( "aarch64-unknown-linux-gnu" "x86_64-unknown-linux-gnu" )
   case "$PROFILE" in
     all)      PKGS=( "update" "reset" "raspberry_camera_hub" "ip_camera_hub" "config_tool" "server" ) ;;
-    release)  PKGS=( "update" "raspberry_camera_hub" "ip_camera_hub" "config_tool" "server" ) ;;
+    release)  PKGS=( "update" "raspberry_camera_hub" "config_tool" "server" ) ;;
     *) echo "Invalid profile for all: $PROFILE" >&2; exit 1 ;;
   esac
 else

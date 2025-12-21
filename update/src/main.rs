@@ -95,7 +95,7 @@ const USAGE: &str = r#"
 Secluso updater.
 
 Usage:
-  secluso-update --component COMPONENT [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]...
+  secluso-update --component COMPONENT [--once] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]...
   secluso-update (--help | -h)
   secluso-update (--version | -v)
 
@@ -108,6 +108,7 @@ Options:
   --github-timeout-secs N    HTTP timeout seconds [default: 20].
   --github-repo <OWNER/REPO>  GitHub repo to poll for releases [default: secluso/secluso].
   --sig-key <NAME:GITHUB_USER>  Signature label + GitHub user (repeatable).
+  --once                     Run a single update check then exit.
   --version, -v              Show tool version.
   --help, -h                 Show this screen.
 "#;
@@ -120,6 +121,7 @@ struct Args {
     flag_github_timeout_secs: u64,
     flag_github_repo: String,
     flag_sig_key: Vec<String>,
+    flag_once: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,6 +258,15 @@ fn main() -> ! {
         .map(|d| d.version(Some(version)))
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
+
+    if args.flag_once {
+        println!("Going to check for updates.");
+        if let Err(e) = check_update(&args) {
+            eprintln!("Update check failed: {:#}", e);
+            std::process::exit(1);
+        }
+        return std::process::exit(0);
+    }
 
     loop {
         println!("Going to check for updates.");
