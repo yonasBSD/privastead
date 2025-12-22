@@ -15,6 +15,7 @@
     key2Name: string;
     key2User: string;
     githubToken: string;
+    showDockerHelp: boolean;
   };
 
   const STORAGE_KEY = "secluso-dev-settings";
@@ -29,7 +30,8 @@
     key1User: "",
     key2Name: "",
     key2User: "",
-    githubToken: ""
+    githubToken: "",
+    showDockerHelp: false
   };
 
   let devSettings: DevSettings = { ...defaultSettings };
@@ -70,6 +72,15 @@
     </div>
 
     {#if devSettings.enabled}
+      <div class="section block">
+        <div class="block-title">UI Testing <span class="badge">Optional</span></div>
+        <label class="toggle">
+          <input type="checkbox" bind:checked={devSettings.showDockerHelp} />
+          <span>Force Docker help panel</span>
+        </label>
+        <p class="help">Shows the Docker install panel even when Docker is installed.</p>
+      </div>
+
       <div class="section block">
         <div class="block-title">Wi-Fi <span class="badge">Optional</span></div>
         <label class="field">

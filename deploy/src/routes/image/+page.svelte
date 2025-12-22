@@ -4,7 +4,7 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
   import { browser } from "$app/environment";
-  import { buildImage, checkRequirements, type RequirementStatus } from "$lib/api";
+  import { buildImage, checkRequirements, openExternalUrl, type RequirementStatus } from "$lib/api";
 
   // variants data model
   type VariantKey = "official" | "diy";
@@ -45,6 +45,7 @@
     key2Name: string;
     key2User: string;
     githubToken: string;
+    showDockerHelp: boolean;
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
@@ -65,7 +66,8 @@
     key1User: "",
     key2Name: "",
     key2User: "",
-    githubToken: ""
+    githubToken: "",
+    showDockerHelp: false
   };
 
   // progress state
@@ -77,6 +79,7 @@
   let checkingRequirements = true;
   $: dockerMissing = missingRequirements.some((req) => req.name === "Docker");
   $: buildxMissing = missingRequirements.some((req) => req.name === "Docker Buildx");
+  $: showDockerHelp = dockerMissing || buildxMissing || (devSettings.enabled && devSettings.showDockerHelp);
 
   async function pickQrOutput() {
     const path = await save({
@@ -219,9 +222,9 @@
   async function openExternal(url: string) {
     if (!browser) return;
     try {
-      const mod = await import("@tauri-apps/plugin-opener");
-      await mod.open(url);
-    } catch {
+      await openExternalUrl(url);
+    } catch (err) {
+      console.warn("Failed to open external link via shell opener.", err);
       window.open(url, "_blank", "noopener,noreferrer");
     }
   }
@@ -266,7 +269,7 @@
     </section>
   {/if}
 
-  {#if dockerMissing || buildxMissing}
+  {#if showDockerHelp}
     <section class="card requirements">
       <h2>Install Docker</h2>
       <p class="muted">Docker is required for image builds.</p>

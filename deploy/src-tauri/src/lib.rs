@@ -4,6 +4,7 @@
 mod pi_hub_provision;
 mod provision_server;
 mod requirements;
+mod open_external;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,6 +16,7 @@ pub fn run() {
             pi_hub_provision::build_image,
             pi_hub_provision::generate_user_credentials,
             requirements::check_requirements,
+            open_external::open_external_url,
             provision_server::test_server_ssh,
             provision_server::provision_server,
         ])

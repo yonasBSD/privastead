@@ -8,6 +8,7 @@
     testServerSsh,
     provisionServer,
     checkRequirements,
+    openExternalUrl,
     type RequirementStatus,
     type SshTarget,
     type ServerPlan
@@ -41,6 +42,7 @@
     key2Name: string;
     key2User: string;
     githubToken: string;
+    showDockerHelp: boolean;
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
@@ -53,7 +55,8 @@
     key1User: "",
     key2Name: "",
     key2User: "",
-    githubToken: ""
+    githubToken: "",
+    showDockerHelp: false
   };
   let devSettings: DevSettings | null = null;
   let firstTimeOn = false;
@@ -69,6 +72,7 @@
   let checkingRequirements = true;
   $: dockerMissing = missingRequirements.some((req) => req.name === "Docker");
   $: buildxMissing = missingRequirements.some((req) => req.name === "Docker Buildx");
+  $: showDockerHelp = dockerMissing || buildxMissing || (!!devSettings?.enabled && !!devSettings?.showDockerHelp);
 
   function goBack() {
     goto("/");
@@ -299,9 +303,9 @@
   async function openExternal(url: string) {
     if (!browser) return;
     try {
-      const mod = await import("@tauri-apps/plugin-opener");
-      await mod.open(url);
-    } catch {
+      await openExternalUrl(url);
+    } catch (err) {
+      console.warn("Failed to open external link via shell opener.", err);
       window.open(url, "_blank", "noopener,noreferrer");
     }
   }
@@ -355,7 +359,7 @@
     </section>
   {/if}
 
-  {#if dockerMissing || buildxMissing}
+  {#if showDockerHelp}
     <section class="card requirements">
       <h2>Install Docker</h2>
       <p class="muted">Docker is required to continue.</p>
