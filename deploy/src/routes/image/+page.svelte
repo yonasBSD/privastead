@@ -2,6 +2,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { save } from "@tauri-apps/plugin-dialog";
+  import { open as openUrl } from "@tauri-apps/plugin-opener";
   import { goto } from "$app/navigation";
   import { buildImage, checkRequirements, type RequirementStatus } from "$lib/api";
 
@@ -215,6 +216,14 @@
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
 
+  async function openExternal(url: string) {
+    try {
+      await openUrl(url);
+    } catch {
+      if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }
+
   onMount(async () => {
     try {
       requirements = await checkRequirements();
@@ -265,9 +274,9 @@
         <li>Linux: install Docker Engine and the Buildx plugin.</li>
       </ul>
       <div class="req-links">
-        <a href="https://docs.docker.com/desktop/install/windows-install/">Windows install guide</a>
-        <a href="https://docs.docker.com/desktop/install/mac-install/">macOS install guide</a>
-        <a href="https://docs.docker.com/engine/install/">Linux install guide</a>
+        <a href="https://docs.docker.com/desktop/install/windows-install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/desktop/install/windows-install/")}>Windows install guide</a>
+        <a href="https://docs.docker.com/desktop/install/mac-install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/desktop/install/mac-install/")}>macOS install guide</a>
+        <a href="https://docs.docker.com/engine/install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/engine/install/")}>Linux install guide</a>
       </div>
     </section>
   {/if}

@@ -34,11 +34,6 @@ pub async fn check_requirements() -> Result<Vec<RequirementStatus>, String> {
     let checks = vec![
       ("Docker", "docker", vec!["--version"], "Needed to build Raspberry Pi images."),
       ("Docker Buildx", "docker", vec!["buildx", "version"], "Needed for reproducible release builds."),
-      ("Git", "git", vec!["--version"], "Needed to fetch sources."),
-      ("Node.js (18+)", "node", vec!["--version"], "Needed for UI dev."),
-      ("pnpm", "pnpm", vec!["--version"], "Needed for UI dev."),
-      ("Rust (1.85)", "rustc", vec!["--version"], "Needed for Tauri backend builds."),
-      ("Cargo", "cargo", vec!["--version"], "Needed for Rust builds."),
     ];
 
     for (name, cmd, args, hint) in checks {

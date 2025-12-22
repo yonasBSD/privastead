@@ -1,15 +1,11 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { checkRequirements, type RequirementStatus } from "$lib/api";
 
   const STORAGE_KEY = "secluso-dev-settings";
   const FIRST_TIME_KEY = "secluso-first-time";
   let devModeOn = false;
   let firstTimeOn = false;
-  let requirements: RequirementStatus[] = [];
-  let checkingRequirements = true;
-  let missingRequirements: RequirementStatus[] = [];
 
   onMount(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -33,17 +29,6 @@
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
 
-  onMount(async () => {
-    try {
-      requirements = await checkRequirements();
-      missingRequirements = requirements.filter((req) => !req.ok);
-    } catch {
-      requirements = [];
-      missingRequirements = [];
-    } finally {
-      checkingRequirements = false;
-    }
-  });
 </script>
 
 <main class="container">
@@ -85,26 +70,6 @@
         </label>
       </div>
       <p class="muted">Turn this on for step by step guidance.</p>
-    </section>
-  {/if}
-
-  {#if checkingRequirements}
-    <section class="card requirements">
-      <h3>Setup checks</h3>
-      <p class="muted">Checking local tools…</p>
-    </section>
-  {:else if missingRequirements.length > 0}
-    <section class="card requirements">
-      <h3>Missing tools</h3>
-      <ul class="req-list">
-        {#each missingRequirements as req}
-          <li class="req-item">
-            <span class="req-name">{req.name}</span>
-            <span class="req-status missing">Missing</span>
-            <span class="req-detail">{req.hint}</span>
-          </li>
-        {/each}
-      </ul>
     </section>
   {/if}
 
