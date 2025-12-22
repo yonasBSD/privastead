@@ -2,8 +2,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { save } from "@tauri-apps/plugin-dialog";
-  import { open as openUrl } from "@tauri-apps/plugin-opener";
   import { goto } from "$app/navigation";
+  import { browser } from "$app/environment";
   import { buildImage, checkRequirements, type RequirementStatus } from "$lib/api";
 
   // variants data model
@@ -217,10 +217,12 @@
   }
 
   async function openExternal(url: string) {
+    if (!browser) return;
     try {
-      await openUrl(url);
+      const mod = await import("@tauri-apps/plugin-opener");
+      await mod.open(url);
     } catch {
-      if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
+      window.open(url, "_blank", "noopener,noreferrer");
     }
   }
 

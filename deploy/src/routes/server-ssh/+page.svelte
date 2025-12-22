@@ -3,7 +3,7 @@
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
-  import { open as openUrl } from "@tauri-apps/plugin-opener";
+  import { browser } from "$app/environment";
   import {
     testServerSsh,
     provisionServer,
@@ -297,10 +297,12 @@
   }
 
   async function openExternal(url: string) {
+    if (!browser) return;
     try {
-      await openUrl(url);
+      const mod = await import("@tauri-apps/plugin-opener");
+      await mod.open(url);
     } catch {
-      if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
+      window.open(url, "_blank", "noopener,noreferrer");
     }
   }
 

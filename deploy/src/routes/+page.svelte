@@ -245,38 +245,6 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
 }
 .card:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,0,0,0.10); border-color: #d8d8d8; }
 
-.requirements h3 {
-  margin: 0 0 10px 0;
-  font-size: 1.05rem;
-}
-.req-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-.req-item {
-  display: grid;
-  grid-template-columns: 180px 90px 1fr;
-  gap: 10px;
-  align-items: baseline;
-  font-size: 0.95rem;
-}
-.req-name { font-weight: 600; }
-.req-status {
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 0.75rem;
-}
-.req-status.missing { color: #dc2626; }
-.req-detail { color: #555; }
-
-@media (max-width: 720px) {
-  .req-item { grid-template-columns: 1fr; }
-  .req-status { width: max-content; }
-}
 .card:active { transform: translateY(0); }
 
 .card h3 { margin: 0; font-size: 1.1rem; }
