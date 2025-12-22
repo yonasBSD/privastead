@@ -152,6 +152,22 @@
     firstTimeOn = !firstTimeOn;
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
+
+  function isInteractiveTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest("a, button, input, label, textarea, select");
+  }
+
+  function onToggleCardClick(event: MouseEvent) {
+    if (isInteractiveTarget(event.target)) return;
+    toggleFirstTime();
+  }
+
+  function onToggleKey(event: KeyboardEvent) {
+    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+      event.preventDefault();
+      toggleFirstTime();
+    }
+  }
 </script>
 
 <main class="wrap">
@@ -182,12 +198,12 @@
   </header>
 
   {#if firstTimeOn}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h2>Need help?</h2>
+        <h2>First time?</h2>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>On</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
       <p class="muted">Keep this window open while Secluso runs the steps in the background.</p>
@@ -198,15 +214,15 @@
       </ol>
     </section>
   {:else}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h2>Need help?</h2>
+        <h2>First time?</h2>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Off</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
-      <p class="muted">Turn this on for quick guidance.</p>
+      <p class="muted">Turn on the toggle to see the step-by-step guide.</p>
     </section>
   {/if}
 
@@ -291,6 +307,7 @@
   .topbar h1 { text-align: center; margin: 0; font-size: 1.6rem; color: #f8fafc; }
   .spacer { width: 100%; }
   .cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .toggle-card { cursor: pointer; }
 
   .back {
     appearance: none;

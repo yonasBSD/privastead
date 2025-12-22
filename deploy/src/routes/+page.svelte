@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import { openExternalUrl } from "$lib/api";
 
   const STORAGE_KEY = "secluso-dev-settings";
   const FIRST_TIME_KEY = "secluso-first-time";
@@ -29,6 +30,38 @@
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
 
+  function setHelpRef() {
+    try {
+      sessionStorage.setItem("secluso-help-ref", window.location.pathname);
+    } catch {
+      // best effort only
+    }
+  }
+
+  function isInteractiveTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest("a, button, input, label, textarea, select");
+  }
+
+  function onToggleCardClick(event: MouseEvent) {
+    if (isInteractiveTarget(event.target)) return;
+    toggleFirstTime();
+  }
+
+  function onToggleKey(event: KeyboardEvent) {
+    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+      event.preventDefault();
+      toggleFirstTime();
+    }
+  }
+
+  async function openExternal(url: string) {
+    try {
+      await openExternalUrl(url);
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }
+
 </script>
 
 <main class="container">
@@ -41,14 +74,32 @@
     </div>
   </div>
   <p class="subtitle">Get your encrypted camera system online in two easy steps.</p>
+  <section class="welcome">
+    <div class="welcome-card">
+      <div class="welcome-copy">
+        <h2>Welcome to Secluso</h2>
+        <p class="muted">Achieve true privacy with an easy, non-compromising setup. Follow the steps below to get everything online.</p>
+      </div>
+      <div class="store-links">
+        <a class="store-btn" href="https://apps.apple.com/app/id0000000000" on:click|preventDefault={() => openExternal("https://apps.apple.com/app/id0000000000")}>
+          <span class="store-icon">A</span>
+          <span>App Store (placeholder)</span>
+        </a>
+        <a class="store-btn" href="https://play.google.com/store/apps/details?id=com.secluso.mobile" on:click|preventDefault={() => openExternal("https://play.google.com/store/apps/details?id=com.secluso.mobile")}>
+          <span class="store-icon">G</span>
+          <span>Google Play (placeholder)</span>
+        </a>
+      </div>
+    </div>
+  </section>
 
   {#if firstTimeOn}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h3>Need help?</h3>
+        <h3>First time?</h3>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>On</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
       <p class="muted">No scripts or command line steps needed.</p>
@@ -59,17 +110,21 @@
         <li>Open the app and scan the server QR code, then the camera QR code.</li>
       </ol>
       <p class="muted">Need a server? A low cost option is Ionos VPS for around $2 per month. Just copy the login details from your provider and the app handles the setup. We are not affiliated with Ionos.</p>
+      <div class="help-links">
+        <a class="help-link" href="/hardware-help" on:click={setHelpRef}>Recommended hardware guide</a>
+        <a class="help-link" href="/ionos-help" on:click={setHelpRef}>Ionos VPS setup guide</a>
+      </div>
     </section>
   {:else}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h3>Need help?</h3>
+        <h3>First time?</h3>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Off</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
-      <p class="muted">Turn this on for step by step guidance.</p>
+      <p class="muted">Turn on the toggle to see the step-by-step guide.</p>
     </section>
   {/if}
 
@@ -190,6 +245,46 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
   color: #333;
 }
 
+.welcome { margin-bottom: 18px; }
+.welcome-card {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 16px;
+  padding: 18px;
+  background: linear-gradient(135deg, #f7f8fb, #ffffff);
+  border: 1px solid #e6e6e6;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+}
+.welcome-copy h2 { margin: 0 0 8px; font-size: 1.25rem; }
+.store-links { display: flex; gap: 12px; flex-wrap: wrap; }
+.store-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid #dfe3ea;
+  background: #fff;
+  text-decoration: none;
+  color: #1f2937;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.store-btn:hover { border-color: #c9d3ea; }
+.store-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: #396cd8;
+  color: #fff;
+  font-size: 0.85rem;
+}
+
 .step { margin-top: 8px; }
 
 .stephead {
@@ -250,6 +345,7 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
 .card h3 { margin: 0; font-size: 1.1rem; }
 .card p { margin: 0; color: #444; }
 .cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.toggle-card { cursor: pointer; }
 
 .quick-steps {
   margin: 6px 0 0;
@@ -257,6 +353,10 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
   color: #555;
 }
 .quick-steps li { margin: 4px 0; }
+
+.help-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.help-link { font-size: 0.95rem; color: #396cd8; text-decoration: none; }
+.help-link:hover { text-decoration: underline; }
 
 .details { margin: 4px 0 0; padding-left: 18px; color: #555; }
 .details li { margin: 2px 0; }
@@ -285,6 +385,9 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
   .dev-dot { border-color: #1f2937; }
   .dev-dot.on { background: #22c55e; border-color: #16a34a; }
   .dev-dot.off { background: #ef4444; border-color: #dc2626; }
+  .welcome-card { background: linear-gradient(135deg, #10131a, #14171f); border-color: #2a2a2a; }
+  .store-btn { background: #111; border-color: #2a2a2a; color: #f6f6f6; }
+  .store-icon { background: #7aa7ff; color: #0b1020; }
 }
 
 .toggle {
@@ -302,5 +405,9 @@ h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
 
 @media (prefers-color-scheme: dark) {
   .toggle { background: #111; border-color: #2a2a2a; color: #f6f6f6; }
+}
+
+@media (max-width: 720px) {
+  .welcome-card { flex-direction: column; align-items: flex-start; }
 }
 </style>

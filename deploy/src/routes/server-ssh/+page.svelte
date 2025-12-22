@@ -300,6 +300,30 @@
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
 
+  function setHelpRef() {
+    try {
+      sessionStorage.setItem("secluso-help-ref", window.location.pathname);
+    } catch {
+      // best effort only
+    }
+  }
+
+  function isInteractiveTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest("a, button, input, label, textarea, select");
+  }
+
+  function onToggleCardClick(event: MouseEvent) {
+    if (isInteractiveTarget(event.target)) return;
+    toggleFirstTime();
+  }
+
+  function onToggleKey(event: KeyboardEvent) {
+    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+      event.preventDefault();
+      toggleFirstTime();
+    }
+  }
+
   async function openExternal(url: string) {
     if (!browser) return;
     try {
@@ -377,12 +401,12 @@
   {/if}
 
   {#if firstTimeOn}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h2>Need help?</h2>
+        <h2>First time?</h2>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>On</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
       <ol class="quick-steps">
@@ -393,17 +417,18 @@
         <li>When you are done, open the app and scan the server QR code, then the camera QR code.</li>
       </ol>
       <p class="muted">Need a server? A low cost option is Ionos VPS for around $2 per month. Just copy the login details from your provider and the app does the rest. We are not affiliated with Ionos.</p>
+      <p class="muted"><a class="help-link" href="/ionos-help" on:click={setHelpRef}>Ionos VPS step-by-step guide</a></p>
     </section>
   {:else}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h2>Need help?</h2>
+        <h2>First time?</h2>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Off</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
-      <p class="muted">Turn this on for quick guidance.</p>
+      <p class="muted">Turn on the toggle to see the step-by-step guide.</p>
     </section>
   {/if}
 
@@ -511,6 +536,7 @@
 .label-row { display: flex; align-items: center; gap: 10px; }
 .help-link { font-size: 0.9rem; color: #396cd8; text-decoration: none; }
 .help-link:hover { text-decoration: underline; }
+.toggle-card { cursor: pointer; }
 .requirements h2 { margin: 0 0 10px 0; }
 .req-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
 .req-item { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; }

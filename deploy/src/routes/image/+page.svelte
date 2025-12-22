@@ -219,6 +219,30 @@
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
 
+  function setHelpRef() {
+    try {
+      sessionStorage.setItem("secluso-help-ref", window.location.pathname);
+    } catch {
+      // best effort only
+    }
+  }
+
+  function isInteractiveTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest("a, button, input, label, textarea, select");
+  }
+
+  function onToggleCardClick(event: MouseEvent) {
+    if (isInteractiveTarget(event.target)) return;
+    toggleFirstTime();
+  }
+
+  function onToggleKey(event: KeyboardEvent) {
+    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+      event.preventDefault();
+      toggleFirstTime();
+    }
+  }
+
   async function openExternal(url: string) {
     if (!browser) return;
     try {
@@ -287,12 +311,12 @@
   {/if}
 
   {#if firstTimeOn}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h2>Need help?</h2>
+        <h2>First time?</h2>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>On</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
       <ol class="quick-steps">
@@ -303,17 +327,18 @@
         <li>Start the Raspberry Pi and keep the camera QR code for the app.</li>
         <li>When you are done, go back and set up your server.</li>
       </ol>
+      <p class="muted">Need hardware? <a class="help-link" href="/hardware-help" on:click={setHelpRef}>See recommended hardware</a>.</p>
     </section>
   {:else}
-    <section class="card">
+    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
       <div class="cardhead">
-        <h2>Need help?</h2>
+        <h2>First time?</h2>
         <label class="toggle">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Off</span>
+          <span>Show step-by-step guidance</span>
         </label>
       </div>
-      <p class="muted">Turn this on for quick guidance.</p>
+      <p class="muted">Turn on the toggle to see the step-by-step guide.</p>
     </section>
   {/if}
 
@@ -450,6 +475,9 @@ button.ghost { background: #f6f6f6; }
 
 .quick-steps { margin: 6px 0 0; padding-left: 20px; color: #555; }
 .quick-steps li { margin: 4px 0; }
+.help-link { color: #396cd8; text-decoration: none; font-size: 0.95rem; }
+.help-link:hover { text-decoration: underline; }
+.toggle-card { cursor: pointer; }
 
 @media (max-width: 720px) {
   .row { flex-direction: column; align-items: stretch; }
