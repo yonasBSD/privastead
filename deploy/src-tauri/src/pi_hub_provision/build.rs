@@ -8,7 +8,7 @@ use crate::pi_hub_provision::{BuildImageRequest, BuildImageResponse};
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -27,6 +27,29 @@ const DEFAULT_PACKAGES: &[&str] = &[
   "vim",
   "htop",
 ];
+
+fn is_linux_x86() -> bool {
+  std::env::consts::OS == "linux"
+    && matches!(std::env::consts::ARCH, "x86" | "x86_64" | "i586" | "i686")
+}
+
+fn has_qemu_user_static() -> bool {
+  let probe = Command::new("qemu-aarch64-static")
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok();
+  if probe {
+    return true;
+  }
+  Command::new("qemu-user-static")
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok()
+}
 
 fn normalize_repo(input: &str) -> String {
   let trimmed = input.trim().trim_end_matches('/');
@@ -55,6 +78,16 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
   let docker_ver = docker_version().context("docker --version failed")?;
   log_line(app, run_id, "info", Some("docker_check"), docker_ver);
   step_ok(app, run_id, "docker_check");
+
+  if is_linux_x86() {
+    step_start(app, run_id, "qemu_check", "Checking qemu-user-static");
+    if !has_qemu_user_static() {
+      let msg = "qemu-user-static is required on Linux x86 hosts to build ARM images. Install it (e.g. sudo apt-get install -y qemu-user-static) and retry.";
+      step_error(app, run_id, "qemu_check", msg);
+      bail!(msg);
+    }
+    step_ok(app, run_id, "qemu_check");
+  }
 
   // resolve output paths and build a config used by the image builder script
   let output_path = PathBuf::from(&req.image_output_path);
