@@ -47,10 +47,11 @@ pub fn parse_user_credentials_full(
 
 fn generate_random(num_chars: usize) -> String {
     // We exclude : because that character has a special use in the http(s) auth header.
+    // We exclude / because that character is used within the Linux file system
     let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                            abcdefghijklmnopqrstuvwxyz\
                            0123456789\
-                           !@#$%^&*()-_=+[]{}|;,.<>?/";
+                           !@#$%^&*()-_=+[]{}|;,.<>?";
 
     let mut rng = thread_rng();
     (0..num_chars)
