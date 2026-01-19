@@ -5,11 +5,11 @@ edition = "2024"
 
 [features]
 default = []
-raspberry = ["ffmpeg-next/rpi"]
+raspberry = []
+file_mode = ["dep:ffmpeg-next", "dep:video-rs", "secluso-motion-ai/mp4_player"]
 
 [dependencies]
-ffmpeg-next = { version = "7.1.0", default-features = false, optional = false }
-
-video-rs= { version = "0.10.3", features = ["ndarray"] }
-secluso-motion-ai = { path = "../pipeline", features=["mp4_player"] }
+ffmpeg-next = { version = "7.1.0", default-features = false, optional = true }
+video-rs= { version = "0.10.3", features = ["ndarray"], optional = true }
+secluso-motion-ai = { path = "../pipeline" }
 anyhow = "1.0.41"

@@ -1,7 +1,6 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::io::*;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -11,8 +10,6 @@ use secluso_motion_ai::backend::spawn_replay_server;
 use secluso_motion_ai::frame::RawFrame;
 use secluso_motion_ai::logic::pipeline::PipelineController;
 use secluso_motion_ai::pipeline;
-
-use video_rs::*;
 
 /// Matches label for MacOS laptop CPU sensor (allows to test on Mac computer when Raspberry Pi is inaccessible)
 #[cfg(not(feature = "raspberry"))]
@@ -25,7 +22,10 @@ const TEMP_LABEL: &str = "cpu_thermal temp1";
 fn main() -> anyhow::Result<()> {
     println!("Select mode:");
     println!("1. Telemetry mode (run web server)");
+    #[cfg(feature = "file_mode")]
     println!("2. File mode (process an MP4 file)");
+    #[cfg(not(feature = "file_mode"))]
+    println!("2. File mode (process an MP4 file) [disabled: build without file_mode feature]");
     print!("Enter choice (1 or 2): ");
     let _ = stdout().flush();
 
@@ -58,15 +58,22 @@ fn main() -> anyhow::Result<()> {
             }
         }
         "2" => {
-            // File mode
-            print!("Enter MP4 file path: ");
-            let _ = stdout().flush();
+            #[cfg(feature = "file_mode")]
+            {
+                // File mode
+                print!("Enter MP4 file path: ");
+                let _ = stdout().flush();
 
-            let mut input = String::new();
-            stdin().read_line(&mut input)?;
-            let input_trimmed = input.trim_end();
+                let mut input = String::new();
+                stdin().read_line(&mut input)?;
+                let input_trimmed = input.trim_end();
 
-            use_from_video(input_trimmed)?;
+                use_from_video(input_trimmed)?;
+            }
+            #[cfg(not(feature = "file_mode"))]
+            {
+                println!("File mode disabled. Rebuild with --features file_mode.");
+            }
         }
         _ => {
             println!("Invalid selection. Exiting.");
@@ -76,6 +83,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "file_mode")]
 fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
     video_rs::init().unwrap();
 
@@ -112,7 +120,8 @@ fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
         println!("Exited loop");
     });
 
-    let mut decoder = Decoder::new(Path::new(video_path)).expect("failed to create decoder");
+    let mut decoder =
+        video_rs::Decoder::new(Path::new(video_path)).expect("failed to create decoder");
 
     let fps = 3;
     let mut last_frame_time: f32 = 0f32;
@@ -134,3 +143,5 @@ fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
 
     Ok(())
 }
+#[cfg(feature = "file_mode")]
+use std::path::Path;

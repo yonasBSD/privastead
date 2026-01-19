@@ -20,6 +20,11 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       clang pkg-config nettle-dev; \
+    if [ "$CRATE_NAME" = "motion_ai/cli" ]; then \
+      apt-get install -y --no-install-recommends \
+        libavutil-dev libavcodec-dev libavformat-dev libavfilter-dev \
+        libavdevice-dev libswscale-dev libswresample-dev; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the files from host into the builder

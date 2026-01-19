@@ -68,11 +68,16 @@ build_and_manifest() {
 
       # Map profile-specific pseudo-packages to real crates + features
       if [[ "$PKG" == "raspberry_camera_hub" ]]; then
-        FEATURES_ARGS=( --build-arg "FEATURES=--features raspberry" )
+        FEATURES_ARGS=( --build-arg "FEATURES=--features raspberry,telemetry" )
         CRATE_NAME="camera_hub"
       elif [[ "$PKG" == "ip_camera_hub" ]]; then
         FEATURES_ARGS=( --build-arg "FEATURES=--features ip" )
         CRATE_NAME="camera_hub"
+      fi
+
+      if [[ "$PKG" == "motion_ai_cli" ]]; then
+        FEATURES_ARGS=( --build-arg "FEATURES=--features raspberry" )
+        CRATE_NAME="motion_ai/cli"
       fi
 
       # Skip raspberry-only tools (raspberry camera hub, reset) unless building the raspberry triple
@@ -94,8 +99,8 @@ build_and_manifest() {
       # Compute the crate lock SHA. It's okay to do this because it doesn't affect security; we don't need to compute it at runtime when doing checks.
       local CRATE_LOCK_SHA="$(sha256sum "$CRATE_LOCK" | awk '{print $1}')"
 
-      # Bin name convention
-      local BIN="secluso-$(tr '_' '-' <<<"$CRATE_NAME")"
+      # Bin name convention; map path separators to dashes for nested crates.
+      local BIN="secluso-$(tr '_/' '-' <<<"$CRATE_NAME")"
 
       # Per-arch output dir
       local ART_DIR="$OUTDIR/${TRIPLE}"
@@ -367,6 +372,7 @@ if [[ "$TARGET" == "raspberry" ]]; then
     all)      PKGS=( "update" "reset" "raspberry_camera_hub" "config_tool" ) ;;
     core)     PKGS=( "raspberry_camera_hub" "reset" "update" ) ;;
     camerahub)PKGS=( "raspberry_camera_hub" ) ;;
+    motion_ai_cli)PKGS=( "motion_ai_cli" ) ;;
     *) echo "Invalid profile for raspberry: $PROFILE" >&2; exit 1 ;;
   esac
 elif [[ "$TARGET" == "ipcamera" ]]; then
