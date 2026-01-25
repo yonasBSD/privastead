@@ -226,7 +226,13 @@ impl RaspberryPiCamera {
                 let avcc = Self::annexb_to_avcc_frame(&frame.data, /*strip_aud*/ true, /*strip_ps*/ true);
 
                 // Prepend per-frame SEI carrying capture time
-                let sei = Self::make_sei_unreg_avcc(frame.timestamp.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64);
+                let sei = Self::make_sei_unreg_avcc(
+                    frame
+                        .timestamp
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
+                );
                 let mut sample = Vec::with_capacity(sei.len() + avcc.len());
                 sample.extend_from_slice(&sei);
                 sample.extend_from_slice(&avcc);

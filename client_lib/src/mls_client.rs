@@ -417,7 +417,7 @@ impl MlsClient {
     pub fn save_group_state(&mut self) {
         // Use nanos in order to ensure that each time this function is called, we will use a new file name.
         // This does make some assumptions about the execution speed, but those assumptions are reasonable (for now).
-        let current_timestamp: u128 = Self::now_in_nano_secs();
+        let current_timestamp = Self::next_state_timestamp(&self.file_dir, &self.tag);
 
         let group_helper_option = self.group.as_ref().map(|group| GroupHelper {
             group_name: group.group_name.clone(),
@@ -869,14 +869,40 @@ impl MlsClient {
     fn now_in_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Could not convert time")
+            .unwrap_or_default()
             .as_secs()
     }
 
     fn now_in_nano_secs() -> u128 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Could not convert time")
+            .unwrap_or_default()
             .as_nanos()
+    }
+
+    fn latest_state_timestamp(dir_path: &str, pattern: &str) -> Option<u128> {
+        let files = Self::get_state_files_sorted(dir_path, pattern).ok()?;
+        let first = files.first()?;
+        Self::extract_timestamp(first, pattern)
+    }
+
+    fn next_state_timestamp(dir_path: &str, tag: &str) -> u128 {
+        let now = Self::now_in_nano_secs();
+        let group_pattern = format!("group_state_{}_", tag);
+        let key_pattern = format!("key_store_{}_", tag);
+        let latest_group = Self::latest_state_timestamp(dir_path, &group_pattern);
+        let latest_key = Self::latest_state_timestamp(dir_path, &key_pattern);
+        let latest = match (latest_group, latest_key) {
+            (Some(a), Some(b)) => a.max(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => 0,
+        };
+
+        if latest >= now {
+            latest + 1
+        } else {
+            now
+        }
     }
 }

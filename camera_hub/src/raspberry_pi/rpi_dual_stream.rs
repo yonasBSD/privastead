@@ -166,7 +166,11 @@ fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>, frame: 
 
     // Remove frames older than the time window.
     while let Some(front) = queue.front() {
-        if SystemTime::now().duration_since(front.timestamp).unwrap() > time_window {
+        if SystemTime::now()
+            .duration_since(front.timestamp)
+            .unwrap_or_default()
+            > time_window
+        {
             queue.pop_front();
         } else {
             break;

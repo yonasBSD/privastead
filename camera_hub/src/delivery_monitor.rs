@@ -93,7 +93,7 @@ impl DeliveryMonitor {
     /// See the notes for save_groups_state() in client_lib/src/user.rs
     /// about the algorithm used to determine file names.
     pub fn save_state(&self) {
-        let current_timestamp = Self::now_in_nanos();
+        let current_timestamp = Self::next_state_timestamp(&self.state_dir);
         let data = bincode::serialize(&self).unwrap();
 
         let pathname =
@@ -273,14 +273,41 @@ impl DeliveryMonitor {
     fn now() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Could not convert time")
+            .unwrap_or_default()
             .as_secs()
     }
 
     fn now_in_nanos() -> u128 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Could not convert time")
+            .unwrap_or_default()
             .as_nanos()
+    }
+
+    fn latest_state_timestamp(state_dir: &str, pattern: &str) -> Option<u128> {
+        let files = MlsClient::get_state_files_sorted(state_dir, pattern).ok()?;
+        let first = files.first()?;
+        Self::extract_timestamp(first, pattern)
+    }
+
+    fn next_state_timestamp(state_dir: &str) -> u128 {
+        let now = Self::now_in_nanos();
+        let pattern = "delivery_monitor_";
+        let latest = Self::latest_state_timestamp(state_dir, pattern).unwrap_or(0);
+        if latest >= now {
+            latest + 1
+        } else {
+            now
+        }
+    }
+
+    fn extract_timestamp(file_name: &str, pattern: &str) -> Option<u128> {
+        file_name
+            .strip_prefix(pattern)?
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u128>()
+            .ok()
     }
 }

@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::task::{Context, Poll};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWrite;
 
 /// Used to determine when to end livestream
@@ -106,29 +106,39 @@ pub fn livestream(
         let mut data: Vec<u8> = chunk_number.to_be_bytes().to_vec();
         data.extend(rx.recv().unwrap());
 
-        let start = SystemTime::now();
-        let since_the_epoch = start
-        .duration_since(UNIX_EPOCH)
-        .expect("time should go forward");
-        debug!("Livestream: Received data for chunk {} at {}", chunk_number, since_the_epoch.as_millis());
+        let received_epoch_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        debug!(
+            "Livestream: Received data for chunk {} at {}",
+            chunk_number, received_epoch_ms
+        );
 
+        let enc_start = Instant::now();
         let enc_data = mls_client.encrypt(&data)?;
+        let enc_ms = enc_start.elapsed().as_millis();
+        debug!(
+            "Livestream: Took {}ms for chunk {} for encryption",
+            enc_ms, chunk_number
+        );
 
-        let end = SystemTime::now();
-        let end_since_epoch = end
-        .duration_since(UNIX_EPOCH)
-        .expect("time should go forward");
-        let diff = end_since_epoch.as_millis() - since_the_epoch.as_millis();
-        debug!("Livestream: Took {}ms for chunk {} for encryption", diff, chunk_number);
-
+        let upload_start = Instant::now();
         let num_pending_files =
             http_client.livestream_upload(&group_name, enc_data, chunk_number)?;
         chunk_number += 1;
 
-        let end2 = SystemTime::now();
-        let end_since_epoch2 = end2.duration_since(UNIX_EPOCH).expect("time should go forward");
-        let diff2 = end_since_epoch2.as_millis() - end_since_epoch.as_millis();
-        debug!("Livestream: Took {}ms for chunk {} for uploading (curr time = {})", diff2, chunk_number - 1, end_since_epoch2.as_millis());
+        let upload_ms = upload_start.elapsed().as_millis();
+        let curr_epoch_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        debug!(
+            "Livestream: Took {}ms for chunk {} for uploading (curr time = {})",
+            upload_ms,
+            chunk_number - 1,
+            curr_epoch_ms
+        );
 
         // The server returns 0 when the app has explicitly ended livestream
         if num_pending_files == 0 || num_pending_files > MAX_NUM_PENDING_LIVESTREAM_CHUNKS {

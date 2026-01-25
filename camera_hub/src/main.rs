@@ -26,7 +26,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
-use std::time::SystemTime;
+use std::time::Instant;
 use std::{thread, time::Duration};
 
 mod delivery_monitor;
@@ -361,10 +361,10 @@ fn core(
     let (server_username, server_password, server_addr) = read_parse_full_credentials();
     let http_client = HttpClient::new(server_addr, server_username, server_password);
 
-    let mut locked_motion_check_time: Option<SystemTime> = None;
-    let mut locked_delivery_check_time: Option<SystemTime> = None;
-    let mut locked_livestream_check_time: Option<SystemTime> = None;
-    let mut locked_config_check_time: Option<SystemTime> = None;
+    let mut locked_motion_check_time: Option<Instant> = None;
+    let mut locked_delivery_check_time: Option<Instant> = None;
+    let mut locked_livestream_check_time: Option<Instant> = None;
+    let mut locked_config_check_time: Option<Instant> = None;
     let video_dir = camera.get_video_dir();
     let thumbnail_dir = camera.get_thumbnail_dir();
     let mut delivery_monitor =
@@ -426,7 +426,7 @@ fn core(
         // Send motion events only if we haven't sent one in the past minute
         if (motion_event.motion || test_mode)
             && (locked_motion_check_time.is_none()
-                || locked_motion_check_time.unwrap().le(&SystemTime::now()))
+                || locked_motion_check_time.unwrap().le(&Instant::now()))
         {
             let video_info = VideoInfo::new();
             println!("Detected motion.");
@@ -497,12 +497,12 @@ fn core(
                 }
             }
 
-            locked_motion_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
+            locked_motion_check_time = Some(Instant::now().add(Duration::from_secs(60)));
         }
 
         // Check for livestream requests every second
         if locked_livestream_check_time.is_none()
-            || locked_livestream_check_time.unwrap().le(&SystemTime::now())
+            || locked_livestream_check_time.unwrap().le(&Instant::now())
         {
             // Livestream request? Start it.
             let mut check = livestream_request.lock().unwrap();
@@ -517,12 +517,12 @@ fn core(
                 )?;
             }
 
-            locked_livestream_check_time = Some(SystemTime::now().add(Duration::from_secs(1)));
+            locked_livestream_check_time = Some(Instant::now().add(Duration::from_secs(1)));
         }
 
         // Check with the delivery monitor every minute
         if locked_delivery_check_time.is_none()
-            || locked_delivery_check_time.unwrap().le(&SystemTime::now())
+            || locked_delivery_check_time.unwrap().le(&Instant::now())
         {
             if upload_pending_enc_videos(
                 &clients[MOTION].get_group_name().unwrap(),
@@ -552,12 +552,12 @@ fn core(
                 //let _ = send_pending_thumbnails(camera, &mut clients, &mut delivery_monitor, &http_client);
             }
 
-            locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
+            locked_delivery_check_time = Some(Instant::now().add(Duration::from_secs(60)));
         }
 
         // Check for config commands every second
         if locked_config_check_time.is_none()
-            || locked_config_check_time.unwrap().le(&SystemTime::now())
+            || locked_config_check_time.unwrap().le(&Instant::now())
         {
             let mut enc_commands = config_enc_commands.lock().unwrap();
             for enc_command in &*enc_commands {
@@ -571,7 +571,7 @@ fn core(
                 }
             }
             enc_commands.clear();
-            locked_config_check_time = Some(SystemTime::now().add(Duration::from_secs(1)));
+            locked_config_check_time = Some(Instant::now().add(Duration::from_secs(1)));
         }
 
         // Introduce a small delay since we don't need this constantly checked

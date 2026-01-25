@@ -317,21 +317,21 @@ impl PipelineController {
     /// Main loop to process events, update health/activity FSMs,
     /// emit telemetry, and dispatch intents.
     pub fn tick(&mut self, temp_label: &'static str) -> Result<bool, anyhow::Error> {
-        let time = SystemTime::now();
+        let time = Instant::now();
 
         // Is there a timer event?
         if let Some(e) = self.host_data.timer.poll() {
             self.host_data.event_queue.push_back(e);
         }
 
-        let time_before_health = SystemTime::now();
+        let time_before_health = Instant::now();
         // Is there a health event?
         let health_response = crate::logic::health_states::update(
             &mut self.host_data.ctx,
             &mut self.host_data.telemetry,
             temp_label,
         );
-        let health_elapsed = time_before_health.elapsed()?;
+        let health_elapsed = time_before_health.elapsed();
 
         if let Ok(Some(he)) = health_response {
             self.host_data.event_queue.push_back(he);
@@ -362,7 +362,7 @@ impl PipelineController {
             })?;
 
         // We'll read the new CPU, memory, temp values on Tick in FSM and based on that set throttles / etc accordingly
-        let before_events_run = SystemTime::now();
+        let before_events_run = Instant::now();
         // High-level phase timers
         let mut t_record_event: u128 = 0;
         let mut t_activity_handle: u128 = 0;
@@ -499,8 +499,8 @@ impl PipelineController {
             events_processed += 1;
         }
 
-        let event_run_time = before_events_run.elapsed()?;
-        let total_elapsed = time.elapsed()?;
+        let event_run_time = before_events_run.elapsed();
+        let total_elapsed = time.elapsed();
 
         if total_elapsed > Duration::from_millis(10_000) {
             println!("===START TICK===");
