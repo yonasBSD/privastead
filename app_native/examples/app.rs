@@ -276,7 +276,7 @@ fn fetch_motion_video(
     let enc_filepath = Path::new(DATA_DIR).join("videos").join(&enc_filename);
     match http_client.fetch_enc_video(&group_name, &enc_filepath) {
         Ok(_) => {
-            let dec_filename = decrypt_video(&mut clients_locked, enc_filename).unwrap();
+            let dec_filename = decrypt_video(&mut clients_locked, enc_filename, epoch).unwrap();
             println!("Received and decrypted file: {}", dec_filename);
             let _ = fs::remove_file(enc_filepath);
             epoch += 1;

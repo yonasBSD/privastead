@@ -418,9 +418,32 @@ fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
+fn should_process_commit(
+    mls_client: &MlsClient,
+    assumed_epoch: u64,
+    client_tag: &str,
+) -> io::Result<bool> {
+    let current_epoch = mls_client.get_epoch()?;
+    if current_epoch == assumed_epoch {
+        Ok(true)
+    } else if current_epoch == assumed_epoch.saturating_add(1) {
+        info!(
+            "Skipping commit processing for {} (current epoch {}, assumed {})",
+            client_tag, current_epoch, assumed_epoch
+        );
+        Ok(false)
+    } else {
+        Err(io::Error::other(format!(
+            "Error: {} epoch mismatch (current {}, assumed {})",
+            client_tag, current_epoch, assumed_epoch
+        )))
+    }
+}
+
 pub fn decrypt_video(
     clients: &mut Option<Box<Clients>>,
     encrypted_filename: String,
+    assumed_epoch: u64,
 ) -> io::Result<String> {
     if clients.is_none() {
         return Err(io::Error::other(
@@ -428,7 +451,8 @@ pub fn decrypt_video(
         ));
     }
 
-    let file_dir = clients.as_mut().unwrap().mls_clients[MOTION].get_file_dir();
+    let clients = clients.as_mut().unwrap();
+    let file_dir = clients.mls_clients[MOTION].get_file_dir();
     info!("File dir: {}", file_dir);
     let enc_pathname: String = format!("{}/videos/{}", file_dir, encrypted_filename);
 
@@ -436,12 +460,14 @@ pub fn decrypt_video(
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
-    clients.as_mut().unwrap().mls_clients[MOTION].decrypt(enc_msg, false)?;
-    clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
+    if should_process_commit(&clients.mls_clients[MOTION], assumed_epoch, "motion")? {
+        clients.mls_clients[MOTION].decrypt(enc_msg, false)?;
+        clients.mls_clients[MOTION].save_group_state();
+    }
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the video info
-    let dec_msg = clients.as_mut().unwrap().mls_clients[MOTION].decrypt(enc_msg, true)?;
+    let dec_msg = clients.mls_clients[MOTION].decrypt(enc_msg, true)?;
 
     let info: VideoNetInfo = bincode::deserialize(&dec_msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -468,7 +494,7 @@ pub fn decrypt_video(
 
     for expected_chunk_number in 0..info.num_msg {
         let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-        let dec_msg = clients.as_mut().unwrap().mls_clients[MOTION].decrypt(enc_msg, true)?;
+        let dec_msg = clients.mls_clients[MOTION].decrypt(enc_msg, true)?;
 
         // check the chunk number
         if dec_msg.len() < 8 {
@@ -494,7 +520,7 @@ pub fn decrypt_video(
     // Then, we save groups state, which persists the update.
     dec_file.flush().unwrap();
     dec_file.sync_all().unwrap();
-    clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
+    clients.mls_clients[MOTION].save_group_state();
 
     Ok(dec_filename)
 }
@@ -503,6 +529,7 @@ pub fn decrypt_thumbnail(
     clients: &mut Option<Box<Clients>>,
     encrypted_filename: String,
     pending_meta_directory: String,
+    assumed_epoch: u64,
 ) -> io::Result<String> {
     if clients.is_none() {
         return Err(io::Error::other(
@@ -510,7 +537,8 @@ pub fn decrypt_thumbnail(
         ));
     }
 
-    let file_dir = clients.as_mut().unwrap().mls_clients[THUMBNAIL].get_file_dir();
+    let clients = clients.as_mut().unwrap();
+    let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
     info!("File dir: {}", file_dir);
     let enc_pathname: String = format!("{}/videos/{}", file_dir, encrypted_filename);
 
@@ -518,12 +546,14 @@ pub fn decrypt_thumbnail(
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
-    clients.as_mut().unwrap().mls_clients[THUMBNAIL].decrypt(enc_msg, false)?;
-    clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
+    if should_process_commit(&clients.mls_clients[THUMBNAIL], assumed_epoch, "thumbnail")? {
+        clients.mls_clients[THUMBNAIL].decrypt(enc_msg, false)?;
+        clients.mls_clients[MOTION].save_group_state();
+    }
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the timestamp
-    let dec_msg = clients.as_mut().unwrap().mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
+    let dec_msg = clients.mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
 
     let thumbnail_meta_info: ThumbnailMetaInfo = bincode::deserialize(&dec_msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -555,7 +585,7 @@ pub fn decrypt_thumbnail(
     let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-    let dec_msg = clients.as_mut().unwrap().mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
+    let dec_msg = clients.mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
 
     let _ = dec_file.write_all(&dec_msg);
 
@@ -563,7 +593,7 @@ pub fn decrypt_thumbnail(
     // Then, we save groups state, which persists the update.
     dec_file.flush().unwrap();
     dec_file.sync_all().unwrap();
-    clients.as_mut().unwrap().mls_clients[THUMBNAIL].save_group_state();
+    clients.mls_clients[THUMBNAIL].save_group_state();
 
     Ok(dec_filename)
 }
