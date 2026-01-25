@@ -13,8 +13,10 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -27,6 +29,7 @@ use yuv::{
 };
 
 pub static SAVE_IMAGES: AtomicBool = AtomicBool::new(true);
+static REJECTED_RUNS: Lazy<RwLock<HashSet<String>>> = Lazy::new(|| RwLock::new(HashSet::new()));
 
 /// Stores raw frame data in both YUV and RGB formats along with metadata.
 /// Used as the fundamental image unit across the inference and telemetry pipeline.
@@ -112,6 +115,10 @@ fn worker(rx: Receiver<SaveJob>) {
     while let Ok(job) = rx.recv() {
         match job {
             SaveJob::Rgb { img, path } => {
+                if is_rejected_path(&path) {
+                    debug!("skip save for rejected run: {}", path.display());
+                    continue;
+                }
                 if let Some(parent) = path.parent()
                     && let Err(e) = fs::create_dir_all(parent)
                 {
@@ -121,11 +128,18 @@ fn worker(rx: Receiver<SaveJob>) {
 
                 if let Err(e) = img.save(&path) {
                     warn!("image save failed {}: {}", path.display(), e);
+                } else if is_rejected_path(&path) {
+                    let _ = fs::remove_file(&path);
+                    debug!("removed RGB for rejected run: {}", path.display());
                 } else {
                     debug!("saved RGB {}", path.display());
                 }
             }
             SaveJob::Gray { img, path } => {
+                if is_rejected_path(&path) {
+                    debug!("skip save for rejected run: {}", path.display());
+                    continue;
+                }
                 if let Some(parent) = path.parent()
                     && let Err(e) = fs::create_dir_all(parent)
                 {
@@ -134,6 +148,9 @@ fn worker(rx: Receiver<SaveJob>) {
 
                 if let Err(e) = img.save(&path) {
                     warn!("gray save failed {}: {}", path.display(), e);
+                } else if is_rejected_path(&path) {
+                    let _ = fs::remove_file(&path);
+                    debug!("removed GRAY for rejected run: {}", path.display());
                 } else {
                     debug!("saved GRAY {}", path.display());
                 }
@@ -163,6 +180,60 @@ fn save_gray_async_if_room(img: &image::GrayImage, path: PathBuf) {
     }
 }
 
+fn is_run_rejected(run_id: &str) -> bool {
+    REJECTED_RUNS
+        .read()
+        .ok()
+        .map_or(false, |set| set.contains(run_id))
+}
+
+fn is_rejected_path(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str());
+    let Some(name) = name else {
+        return false;
+    };
+    let run_id = name.splitn(2, '_').next().unwrap_or("");
+    if run_id.is_empty() {
+        return false;
+    }
+    is_run_rejected(run_id)
+}
+
+pub fn mark_run_rejected(run_id: &str) {
+    if run_id.is_empty() {
+        return;
+    }
+    if let Ok(mut set) = REJECTED_RUNS.write() {
+        set.insert(run_id.to_string());
+    }
+}
+
+pub fn purge_run_frames(session_id: &str, run_id: &str) {
+    if session_id.is_empty() || run_id.is_empty() {
+        return;
+    }
+    let frames_dir = Path::new("output")
+        .join("runs")
+        .join(session_id)
+        .join("frames");
+    let Ok(entries) = fs::read_dir(&frames_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let prefix = name.splitn(2, '_').next().unwrap_or("");
+        if prefix == run_id {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 /// Core methods to manipulate, save, and convert raw image frames.
 /// Includes support for saving annotated detections and converting YUV420p to RGB.
 impl RawFrame {
@@ -178,6 +249,9 @@ impl RawFrame {
         draw_bb: bool,
     ) -> image::ImageResult<String> {
         if !SAVE_IMAGES.load(Ordering::Relaxed) {
+            return Ok("".into());
+        }
+        if is_run_rejected(&run_id.0) {
             return Ok("".into());
         }
 
@@ -240,6 +314,9 @@ impl RawFrame {
         file_name: &str,
     ) -> image::ImageResult<String> {
         if !SAVE_IMAGES.load(Ordering::Relaxed) {
+            return Ok("".into());
+        }
+        if is_run_rejected(&run_id.0) {
             return Ok("".into());
         }
 

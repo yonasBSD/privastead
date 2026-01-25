@@ -1,6 +1,6 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use crate::frame::SAVE_IMAGES;
+use crate::frame::{SAVE_IMAGES, mark_run_rejected, purge_run_frames};
 use crate::logic::intent::Intent;
 use crate::logic::pipeline::RunId;
 use crossbeam_channel::{Sender, TrySendError, bounded, select, tick};
@@ -370,12 +370,17 @@ impl TelemetryRun {
         }
 
         let run_key = run_id.0.as_str();
-        let mut gate = self.gate.lock().unwrap();
-        if gate.run_key.as_deref() != Some(run_key) {
-            gate.run_key = Some(run_key.to_string());
+        {
+            let mut gate = self.gate.lock().unwrap();
+            if gate.run_key.as_deref() != Some(run_key) {
+                gate.run_key = Some(run_key.to_string());
+            }
+            gate.state = GateState::Rejected;
+            gate.pending.clear();
         }
-        gate.state = GateState::Rejected;
-        gate.pending.clear();
+
+        mark_run_rejected(run_key);
+        purge_run_frames(&self.run_id, run_key);
     }
 
     fn try_send_line(&self, line: String) -> Result<(), anyhow::Error> {

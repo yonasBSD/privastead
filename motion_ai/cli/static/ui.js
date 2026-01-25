@@ -1,6 +1,8 @@
 (() => {
     /* refs */
     const listEl = document.getElementById("session-list");
+    const sessionMeta = document.getElementById("session-meta");
+    const sessionsMoreBtn = document.getElementById("sessions-more");
     const canvas = document.getElementById("health-canvas");
     const caption = document.getElementById("chart-caption");
     const qNowEl = document.getElementById("queue-now");
@@ -18,6 +20,8 @@
     const openBtn = document.getElementById("open-btn");
     const logList = document.getElementById("log-list");
     const logMeta = document.getElementById("log-meta");
+    const dataMeta = document.getElementById("data-meta");
+    const olderBtn = document.getElementById("older-btn");
     const modal = document.getElementById("img-modal");
     const modalImg = document.getElementById("modal-img");
     const mPrev = document.getElementById("m-prev");
@@ -32,13 +36,32 @@
         {key: "ram", label: "RAM", color: "#00a87e", unit: "%", y: "pct", dash: [6, 4]},
         {key: "temp", label: "Temp", color: "#ff6a00", unit: "°C", y: "temp", dash: [3, 3]},
     ];
+    const SESSION_PAGE_SIZE = 20;
+    const FRAMES_TAIL_DEFAULT = 200;
+    const EVENTS_TAIL_DEFAULT = 1000;
+    const SERIES_TAIL_DEFAULT = 1500;
+    const FRAMES_TAIL_STEP = 200;
+    const EVENTS_TAIL_STEP = 1000;
+    const SERIES_TAIL_STEP = 1500;
+    const MAX_FRAMES_TAIL = 5000;
+    const MAX_EVENTS_TAIL = 20000;
+    const MAX_SERIES_TAIL = 20000;
+    const RUN_WINDOW_SIZE = 10;
     let visible = {cpu: true, ram: true, temp: true};
     let hoverIndex = null;
 
     /* state */
     let sessions = [];
+    let sessionTotal = 0;
+    let sessionOffset = 0;
     let sid = null;
+    const sessionDetails = new Map();
+    const sessionTail = new Map();
     const seriesCache = new Map();
+    let runOrder = [];
+    let runWindowStart = 0;
+    let runIndexById = new Map();
+    let followLatest = true;
     let groups = [];
     let gidx = 0;
     let ridx = 0;
@@ -50,6 +73,7 @@
     document.addEventListener("DOMContentLoaded", init);
 
     async function init() {
+        sessionOffset = 0;
         await fetchSessions();
         renderSessionList();
         if (sessions.length > 0) {
@@ -99,7 +123,7 @@
     }
 
     function updateLegendValues(sample) {
-        const ser = sid && seriesCache.get(sid);
+        const ser = sid && seriesFor(sid);
         const health = ser && Array.isArray(ser.health) ? ser.health : [];
         const h = sample || health[health.length - 1];
         const map = h ? {
@@ -130,7 +154,7 @@
         const W = canvas.clientWidth || canvas.parentElement.clientWidth || 900;
         const padL = 52, padR = 60, padT = 20, padB = 34;
         const plotW = Math.max(0, W - padL - padR);
-        const ser = sid && seriesCache.get(sid);
+        const ser = sid && seriesFor(sid);
         const health = ser && Array.isArray(ser.health) ? ser.health : [];
         if (health.length < 2) return;
         const rel = clamp((x - padL) / plotW, 0, 1);
@@ -140,47 +164,152 @@
     }
 
     function onCanvasClick(ev) {
-        const ser = sid && seriesCache.get(sid);
+        const ser = sid && seriesFor(sid);
         const health = ser && Array.isArray(ser.health) ? ser.health : [];
         if (health.length < 2) return;
         const idx = sampleIndexFromEvent(ev, health.length);
         const runKey = canonRunKey(health[idx]?.run || "");
         if (!isConcreteRunKey(runKey)) return;
-        const target = groups.findIndex(g => g.runId === runKey);
-        if (target < 0) return;
-        gidx = target;
-        ridx = 0;
         hoverIndex = null;
-        renderGroupFrames();
-        updateFrameUI();
-        renderUnifiedLog();
-        updateGroupLabel();
-        drawChart();
+        const target = runIndexById.get(runKey);
+        if (!Number.isInteger(target)) return;
+        setActiveRunByIndex(target, {resetFrame: true});
     }
 
     /* data */
-    async function fetchSessions() {
+    async function fetchSessions(opts = {}) {
+        const append = opts.append === true;
+        const offset = opts.offset ?? sessionOffset;
+        const limit = opts.limit ?? SESSION_PAGE_SIZE;
+        const qs = new URLSearchParams({
+            offset: String(offset),
+            limit: String(limit),
+        });
         try {
-            const res = await fetch("/sessions", {headers: {"Accept": "application/json"}});
+            const res = await fetch(`/sessions?${qs.toString()}`, {headers: {"Accept": "application/json"}});
             if (!res.ok) throw new Error(`GET /sessions failed: ${res.status}`);
-            sessions = await res.json();
+            const payload = await res.json();
+            const pageSessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+            sessionTotal = Number.isFinite(+payload.total) ? +payload.total : pageSessions.length;
+            sessionOffset = Number.isFinite(+payload.offset) ? +payload.offset : offset;
+            if (append) {
+                const seen = new Set(sessions.map(s => s.id));
+                pageSessions.forEach(s => {
+                    if (!seen.has(s.id)) sessions.push(s);
+                });
+            } else {
+                sessions = pageSessions;
+            }
         } catch (err) {
             console.error(err);
             sessions = [];
+            sessionTotal = 0;
+        }
+        updateSessionMeta();
+    }
+
+    function seriesFor(id) {
+        const entry = id ? seriesCache.get(id) : null;
+        return entry ? entry.data : null;
+    }
+
+    async function fetchSeries(id, refresh = false, tailOverride = null) {
+        if (!id) return {health: [], ticks: []};
+        const tail = (tailOverride != null && Number.isFinite(+tailOverride))
+            ? +tailOverride
+            : seriesTailFor(id);
+        const cached = seriesCache.get(id);
+        if (!refresh && cached && cached.tail >= tail) return cached.data;
+        try {
+            const qs = new URLSearchParams({tail: String(tail)});
+            const res = await fetch(`/sessions/${encodeURIComponent(id)}/series?${qs.toString()}`, {headers: {"Accept": "application/json"}});
+            if (res.ok) {
+                const data = await res.json();
+                seriesCache.set(id, {tail, data});
+                return data;
+            }
+        } catch {
+        }
+        if (cached) return cached.data;
+        const data = {health: [], ticks: []};
+        seriesCache.set(id, {tail, data});
+        return data;
+    }
+
+    function tailForSession(id) {
+        const existing = sessionTail.get(id);
+        return existing || {
+            framesTail: FRAMES_TAIL_DEFAULT,
+            eventsTail: EVENTS_TAIL_DEFAULT,
+            seriesTail: SERIES_TAIL_DEFAULT,
+        };
+    }
+
+    function seriesTailFor(id) {
+        return tailForSession(id).seriesTail;
+    }
+
+    async function ensureSessionDetail(id, opts = {}) {
+        if (!id) return null;
+        const current = tailForSession(id);
+        const framesTail = opts.framesTail ?? current.framesTail;
+        const eventsTail = opts.eventsTail ?? current.eventsTail;
+        const seriesTail = opts.seriesTail ?? current.seriesTail;
+        const force = opts.force === true;
+        const cached = sessionDetails.get(id);
+        if (!force && cached && current.framesTail === framesTail && current.eventsTail === eventsTail) {
+            return cached;
+        }
+        try {
+            const qs = new URLSearchParams({
+                frames_tail: String(framesTail),
+                events_tail: String(eventsTail),
+            });
+            const res = await fetch(`/sessions/${encodeURIComponent(id)}?${qs.toString()}`, {headers: {"Accept": "application/json"}});
+            if (!res.ok) throw new Error(`GET /sessions/${id} failed: ${res.status}`);
+            const detail = await res.json();
+            sessionDetails.set(id, detail);
+            sessionTail.set(id, {framesTail, eventsTail, seriesTail});
+            return detail;
+        } catch (err) {
+            console.error(err);
+            return cached || null;
         }
     }
 
-    async function fetchSeries(id, refresh = false) {
-        if (!id) return {health: [], ticks: []};
-        if (!refresh && seriesCache.has(id)) return seriesCache.get(id);
-        let data = {health: [], ticks: []};
-        try {
-            const res = await fetch(`/sessions/${encodeURIComponent(id)}/series`, {headers: {"Accept": "application/json"}});
-            if (res.ok) data = await res.json();
-        } catch {
+    function updateSessionMeta() {
+        if (!sessionMeta) return;
+        const shown = sessions.length;
+        const total = Math.max(shown, sessionTotal);
+        sessionMeta.textContent = total > 0
+            ? `Showing ${shown} of ${total}`
+            : "No sessions";
+        if (sessionsMoreBtn) {
+            sessionsMoreBtn.disabled = shown >= total;
         }
-        seriesCache.set(id, data);
-        return data;
+    }
+
+    function updateDataMeta() {
+        if (!dataMeta) return;
+        const s = current();
+        const framesShown = s.frames ? s.frames.length : 0;
+        const eventsShown = s.events ? s.events.length : 0;
+        const frameTotal = Number.isFinite(+s.frame_total) ? +s.frame_total : framesShown;
+        const eventTotal = Number.isFinite(+s.event_total) ? +s.event_total : eventsShown;
+        const runTotal = runOrder.length;
+        const runShown = groups.length;
+        const runStart = runTotal ? (runWindowStart + 1) : 0;
+        const runEnd = runTotal ? Math.min(runWindowStart + runShown, runTotal) : 0;
+        if (!sid) {
+            dataMeta.textContent = "";
+            if (olderBtn) olderBtn.disabled = true;
+            return;
+        }
+        const runMeta = runTotal ? ` · Runs ${runStart}-${runEnd} of ${runTotal}` : "";
+        dataMeta.textContent = `Frames ${framesShown}/${frameTotal} · Events ${eventsShown}/${eventTotal}${runMeta}`;
+        if (olderBtn) {
+            olderBtn.disabled = framesShown >= frameTotal && eventsShown >= eventTotal;
+        }
     }
 
     /* sessions */
@@ -195,25 +324,26 @@
         });
     }
 
-    async function selectSession(id) {
+    async function selectSession(id, opts = {}) {
+        if (!id) {
+            sid = null;
+            clearUI();
+            return;
+        }
         sid = id;
         [...listEl.children].forEach(li => li.classList.toggle("selected", li.textContent === id));
-        const s = current();
-        groups = buildGroups(s.frames, s.events);
-        gidx = 0;
-        ridx = 0;
-        renderGroupFrames();
-        updateFrameUI();
-        updateGroupLabel();
+        await ensureSessionDetail(id);
+        rebuildRunState({runId: opts.runId, frame: opts.frame});
         await fetchSeries(id, true);
         drawChart();
         updateRuntimeBox();
         renderUnifiedLog();
         updateLegendValues();
+        updateDataMeta();
     }
 
     function current() {
-        return sessions.find(s => s.id === sid) || {id: "empty", frames: [], events: []};
+        return sessionDetails.get(sid) || {id: "empty", frames: [], events: [], frame_total: 0, event_total: 0};
     }
 
     /* alerts */
@@ -260,48 +390,80 @@
         return first || "unknown";
     }
 
-    function buildGroups(frames, events) {
+    function buildRunOrder(frames, events) {
         const bad = [];
-        const runKeys = Array.from(new Set(
-            (events || []).map(e => {
-                if (!e || typeof e.run !== "string") {
-                    bad.push(e);
-                    return null;
-                }
-                const k = canonRunKey(e.run);
-                if (!isConcreteRunKey(k)) {
-                    bad.push(e);
-                    return null;
-                }
-                return k;
-            }).filter(Boolean)
-        ));
-        if (runKeys.length === 0) {
-            showError("No run keys in events");
+        const eventKeys = [];
+        const seenEvents = new Set();
+        (events || []).forEach(e => {
+            if (!e || typeof e.run !== "string") {
+                bad.push(e);
+                return;
+            }
+            const k = canonRunKey(e.run);
+            if (!isConcreteRunKey(k)) {
+                bad.push(e);
+                return;
+            }
+            if (!seenEvents.has(k)) {
+                seenEvents.add(k);
+                eventKeys.push(k);
+            }
+        });
+
+        const frameKeys = [];
+        const seenFrames = new Set();
+        (frames || []).forEach(u => {
+            const k = canonRunKey(runIdFromUrl(u));
+            if (!isConcreteRunKey(k)) return;
+            if (!seenFrames.has(k)) {
+                seenFrames.add(k);
+                frameKeys.push(k);
+            }
+        });
+
+        const order = eventKeys.length > 0 ? eventKeys : frameKeys;
+        if (order.length === 0) {
+            showError("No run keys in events or frames");
             return [];
         }
-        clearError();
-        if (bad.length > 0) showError(`Some events missing run keys (${bad.length})`);
-        const gs = runKeys.map(rk => {
-            const indices = [];
-            const frs = (frames || []).filter((u, i) => {
-                const fk = canonRunKey(runIdFromUrl(u));
-                if (fk === rk) {
-                    indices.push(i);
-                    return true;
-                }
-                return false;
-            });
+        if (eventKeys.length === 0 && frameKeys.length > 0) {
+            showError("No run keys in events; using frames only");
+        } else if (bad.length > 0) {
+            showError(`Some events missing run keys (${bad.length})`);
+        } else {
+            clearError();
+        }
+        return order;
+    }
+
+    function buildGroupsForRuns(frames, runIds) {
+        const runSet = new Set(runIds);
+        const map = new Map();
+        runIds.forEach(id => map.set(id, {frames: [], indices: []}));
+        (frames || []).forEach((u, i) => {
+            const fk = canonRunKey(runIdFromUrl(u));
+            if (!runSet.has(fk)) return;
+            const entry = map.get(fk);
+            if (!entry) return;
+            entry.frames.push(u);
+            entry.indices.push(i);
+        });
+        return runIds.map(rk => {
+            const entry = map.get(rk) || {frames: [], indices: []};
             return {
                 runId: rk,
-                frames: frs,
-                indices,
-                startGlobal: indices[0] ?? 0,
-                endGlobal: indices.length ? indices[indices.length - 1]
+                frames: entry.frames,
+                indices: entry.indices,
+                startGlobal: entry.indices[0] ?? 0,
+                endGlobal: entry.indices.length ? entry.indices[entry.indices.length - 1]
                     : ((frames || []).length ? (frames.length - 1) : 0)
             };
         });
-        return gs;
+    }
+
+    function runGlobalIndex() {
+        if (runOrder.length === 0) return -1;
+        return clamp(runWindowStart + gidx, 0, runOrder.length - 1);
     }
 
     function curGroup() {
@@ -310,9 +472,84 @@
 
     function updateGroupLabel() {
         const g = curGroup();
-        gLabel.textContent = `Run ${g.runId} (${gidx + 1}/${groups.length})`;
-        gPrevBtn.disabled = gidx <= 0;
-        gNextBtn.disabled = gidx >= Math.max(0, groups.length - 1);
+        const total = runOrder.length;
+        const globalIdx = runGlobalIndex();
+        if (total === 0 || globalIdx < 0) {
+            gLabel.textContent = "Run -";
+            gPrevBtn.disabled = true;
+            gNextBtn.disabled = true;
+            return;
+        }
+        gLabel.textContent = `Run ${g.runId} (${globalIdx + 1}/${total})`;
+        gPrevBtn.disabled = globalIdx <= 0;
+        gNextBtn.disabled = globalIdx >= total - 1;
+    }
+
+    function setActiveRunByIndex(idx, opts = {}) {
+        if (runOrder.length === 0) {
+            groups = [];
+            gidx = 0;
+            ridx = 0;
+            clearUI();
+            return;
+        }
+        const target = clamp(idx, 0, runOrder.length - 1);
+        const maxStart = Math.max(0, runOrder.length - RUN_WINDOW_SIZE);
+        let start = clamp(runWindowStart, 0, maxStart);
+        if (target < start) start = target;
+        if (target >= start + RUN_WINDOW_SIZE) start = target - RUN_WINDOW_SIZE + 1;
+        start = clamp(start, 0, maxStart);
+
+        const windowChanged = start !== runWindowStart || groups.length === 0;
+        runWindowStart = start;
+        if (windowChanged) {
+            const windowRuns = runOrder.slice(runWindowStart, runWindowStart + RUN_WINDOW_SIZE);
+            groups = buildGroupsForRuns(current().frames, windowRuns);
+        }
+        gidx = target - runWindowStart;
+        followLatest = target === runOrder.length - 1;
+        if (opts.resetFrame === false) {
+            ridx = clamp(ridx, 0, Math.max(0, curGroup().frames.length - 1));
+        } else {
+            ridx = 0;
+        }
+        renderGroupFrames();
+        updateFrameUI();
+        renderUnifiedLog();
+        updateGroupLabel();
+        drawChart();
+        updateRuntimeBox();
+        updateLegendValues();
+    }
+
+    function rebuildRunState(opts = {}) {
+        const s = current();
+        runOrder = buildRunOrder(s.frames, s.events);
+        runIndexById = new Map();
+        runOrder.forEach((id, idx) => runIndexById.set(id, idx));
+
+        if (runOrder.length === 0) {
+            runWindowStart = 0;
+            groups = [];
+            gidx = 0;
+            ridx = 0;
+            clearUI();
+            return;
+        }
+
+        const targetId = opts.runId;
+        const targetIdx = (targetId && runIndexById.has(targetId))
+            ? runIndexById.get(targetId)
+            : (runOrder.length - 1);
+        setActiveRunByIndex(targetIdx, {resetFrame: true});
+        if (opts.frame) {
+            const nextIdx = curGroup().frames.indexOf(opts.frame);
+            if (nextIdx >= 0) {
+                ridx = nextIdx;
+                updateFrameUI();
+                drawChart();
+            }
+        }
     }
 
     /* frames */
@@ -398,6 +635,8 @@
         frameInfo.textContent = "";
         logList.innerHTML = "<div class='row muted'><div class='ev-left'><span class='ev-text'>No data</span></div></div>";
         logMeta.textContent = "";
+        if (dataMeta) dataMeta.textContent = "";
+        if (olderBtn) olderBtn.disabled = true;
         clearRuntimeBox();
         drawChart();
     }
@@ -478,22 +717,25 @@
         return {t0, t1};
     }
 
-    function neighborStats(s, groups, idx) {
-        const prev = (idx > 0) ? runTimeStatsFor(s, groups[idx - 1].runId) : null;
-        const next = (idx < groups.length - 1) ? runTimeStatsFor(s, groups[idx + 1].runId) : null;
+    function neighborStats(s, idx) {
+        const prevId = idx > 0 ? runOrder[idx - 1] : null;
+        const nextId = idx < runOrder.length - 1 ? runOrder[idx + 1] : null;
+        const prev = prevId ? runTimeStatsFor(s, prevId) : null;
+        const next = nextId ? runTimeStatsFor(s, nextId) : null;
         return {prev, next};
     }
 
     /**
      * Returns a half-open window [lo, hi) that fully contains the current run’s events, does not overlap neighbors (midpoints between runs), falls back gracefully if neighbors or timestamps are missing
      */
-    function runWindowForCurrentGroup(s, groups, gidx) {
-        const cur = groups[gidx];
-        const curStats = runTimeStatsFor(s, cur.runId);
+    function runWindowForCurrentGroup(s, gidx) {
+        const curId = runOrder[gidx];
+        if (!curId) return null;
+        const curStats = runTimeStatsFor(s, curId);
         if (!curStats) return null; // no timing info for this run
 
         let {t0, t1} = curStats;
-        const {prev, next} = neighborStats(s, groups, gidx);
+        const {prev, next} = neighborStats(s, gidx);
 
         let lo = t0, hi = t1 + 1; // +1ms so ticks at exactly t1 are included
 
@@ -531,7 +773,7 @@
         // Ticks limited to current run by timestamp window
         let tickRows = [];
         if (toggleTicks?.checked) {
-            const ser = sid && seriesCache.get(sid);
+            const ser = sid && seriesFor(sid);
             const rawTicks = (ser && Array.isArray(ser.ticks)) ? ser.ticks : [];
             let ticks = normalizeTicks(rawTicks);
 
@@ -545,7 +787,8 @@
             }
 
             // Strongest filter: by non-overlapping time window of the current run
-            const win = runWindowForCurrentGroup(s, groups, gidx);
+            const globalIdx = runGlobalIndex();
+            const win = (globalIdx >= 0) ? runWindowForCurrentGroup(s, globalIdx) : null;
             if (win) {
                 const {lo, hi} = win;
                 ticks = ticks.filter(t => Number.isFinite(t.ts) && t.ts >= lo && t.ts < hi);
@@ -590,6 +833,14 @@
 
     /* controls */
     function wireControls() {
+        if (sessionsMoreBtn) {
+            sessionsMoreBtn.onclick = async () => {
+                if (sessions.length >= sessionTotal) return;
+                const nextOffset = sessions.length;
+                await fetchSessions({append: true, offset: nextOffset});
+                renderSessionList();
+            };
+        }
         prevBtn.onclick = () => {
             if (ridx > 0) {
                 ridx--;
@@ -612,25 +863,13 @@
         };
         slider.onchange = slider.oninput;
         gPrevBtn.onclick = () => {
-            if (gidx > 0) {
-                gidx--;
-                ridx = 0;
-                renderGroupFrames();
-                updateFrameUI();
-                drawChart();
-                renderUnifiedLog();
-                updateGroupLabel();
-            }
+            const idx = runGlobalIndex();
+            if (idx > 0) setActiveRunByIndex(idx - 1, {resetFrame: true});
         };
         gNextBtn.onclick = () => {
-            if (gidx < groups.length - 1) {
-                gidx++;
-                ridx = 0;
-                renderGroupFrames();
-                updateFrameUI();
-                drawChart();
-                renderUnifiedLog();
-                updateGroupLabel();
+            const idx = runGlobalIndex();
+            if (idx >= 0 && idx < runOrder.length - 1) {
+                setActiveRunByIndex(idx + 1, {resetFrame: true});
             }
         };
         window.addEventListener("keydown", (e) => {
@@ -654,6 +893,28 @@
         window.addEventListener("resize", drawChart);
         toggleTicks.onchange = renderUnifiedLog;
         toggleNoop.onchange = renderUnifiedLog;
+
+        if (olderBtn) {
+            olderBtn.onclick = async () => {
+                if (!sid) return;
+                const prevRun = curGroup().runId;
+                const prevFrame = curGroup().frames[ridx];
+                const cur = tailForSession(sid);
+                const framesTail = Math.min(cur.framesTail + FRAMES_TAIL_STEP, MAX_FRAMES_TAIL);
+                const eventsTail = Math.min(cur.eventsTail + EVENTS_TAIL_STEP, MAX_EVENTS_TAIL);
+                const seriesTail = Math.min(cur.seriesTail + SERIES_TAIL_STEP, MAX_SERIES_TAIL);
+
+                await ensureSessionDetail(sid, {
+                    framesTail,
+                    eventsTail,
+                    seriesTail,
+                    force: true,
+                });
+                await fetchSeries(sid, true, seriesTail);
+                rebuildRunState({runId: prevRun, frame: prevFrame});
+                updateDataMeta();
+            };
+        }
     }
 
     /* modal */
@@ -687,13 +948,13 @@
     }
 
     function updateRuntimeBox() {
-        const s = sid && seriesCache.get(sid);
+        const s = sid && seriesFor(sid);
         if (!s || !s.ticks || s.ticks.length === 0) {
             clearRuntimeBox();
             return;
         }
         const last = s.ticks[s.ticks.length - 1];
-        const peak = s.ticks.reduce((m, t) => Math.max(m, safeNum(t.maxQueue, 0)), 0);
+        const peak = s.ticks.reduce((m, t) => Math.max(m, safeNum(t.maxQueue ?? t.max_queue, 0)), 0);
         qNowEl.textContent = safeNum(last.queue, "-");
         qPeakEl.textContent = peak === 0 ? "-" : peak.toString();
         sbEl.textContent = last.standby ? "Yes" : "No";
@@ -713,7 +974,7 @@
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, W, H);
 
-        const ser = sid && seriesCache.get(sid);
+        const ser = sid && seriesFor(sid);
         const health = ser && Array.isArray(ser.health) ? ser.health : [];
         const s = current();
         const g = curGroup();
@@ -898,35 +1159,47 @@
         if (reloadInFlight) return;
         reloadInFlight = true;
         const prevSid = sid;
-        const prevSessions = sessions.slice();
-        const prevById = new Map(prevSessions.map(s => [s.id, s]));
+        const prevRun = curGroup().runId;
+        const prevFrame = curGroup().frames[ridx];
+        const prevDetails = new Map(sessionDetails);
+        const prevTail = new Map(sessionTail);
+        const prevSeries = new Map(seriesCache);
+        const listSize = Math.max(sessions.length, SESSION_PAGE_SIZE);
         try {
             const res = await fetch("/reload", {method: "POST"});
             if (!res.ok) throw new Error(`POST /reload failed: ${res.status}`);
-            await fetchSessions();
-            if (preserveView && prevSid) {
-                const prevCurrent = prevById.get(prevSid);
-                if (prevCurrent && sessions.find(s => s.id === prevSid)) {
-                    sessions = sessions.map(s => (s.id === prevSid ? prevCurrent : s));
-                }
-            }
+            await fetchSessions({limit: listSize, offset: 0});
             renderSessionList();
-            if (!sid && sessions.length > 0) {
+            if (preserveView) {
+                if (prevSid) {
+                    if (sessions.find(s => s.id === prevSid)) {
+                        const selectedIsLatestSession = sessions.length > 0 && sessions[0].id === prevSid;
+                        if (prevDetails.has(prevSid)) sessionDetails.set(prevSid, prevDetails.get(prevSid));
+                        if (prevTail.has(prevSid)) sessionTail.set(prevSid, prevTail.get(prevSid));
+                        if (prevSeries.has(prevSid)) seriesCache.set(prevSid, prevSeries.get(prevSid));
+                        if (selectedIsLatestSession && followLatest) {
+                            await selectSession(prevSid, {runId: prevRun, frame: prevFrame});
+                        } else {
+                            updateGroupLabel();
+                            updateDataMeta();
+                        }
+                    } else {
+                        updateGroupLabel();
+                        updateDataMeta();
+                    }
+                } else if (sessions.length > 0) {
+                    await selectSession(sessions[0].id);
+                }
+            } else if (!sid && sessions.length > 0) {
                 await selectSession(sessions[0].id);
             } else if (sid && !sessions.find(s => s.id === sid)) {
                 await selectSession(sessions[0]?.id || null);
-            } else if (!preserveView) {
-                const s = current();
-                groups = buildGroups(s.frames, s.events);
-                gidx = clamp(gidx, 0, Math.max(0, groups.length - 1));
-                ridx = 0;
-                renderGroupFrames();
-                updateFrameUI();
+            } else {
+                const prevRun = curGroup().runId;
+                const prevFrame = curGroup().frames[ridx];
                 await fetchSeries(sid, true);
-                drawChart();
-                updateRuntimeBox();
-                renderUnifiedLog();
-                updateGroupLabel();
+                rebuildRunState({runId: prevRun, frame: prevFrame});
+                updateDataMeta();
             }
         } catch (err) {
             console.error(err);
@@ -939,6 +1212,7 @@
         if (autoReloadId) return;
         autoReloadId = setInterval(() => {
             if (document.hidden) return;
+            if (!followLatest) return;
             reloadSessions({preserveView: true});
         }, AUTO_REFRESH_MS);
     }

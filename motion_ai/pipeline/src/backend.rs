@@ -2,13 +2,14 @@
 
 use anyhow::{Context, Result, bail};
 use rocket::{
-    State, fairing::AdHoc, fs::FileServer, get, http::ContentType, post,
+    State, fairing::AdHoc, form::FromForm, fs::FileServer, get, http::ContentType, post,
     response::content::RawHtml, routes, serde::json::Json,
 };
 use serde::Serialize;
 use serde_json::Value;
 use std::{
     cmp::Ordering,
+    collections::VecDeque,
     fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -211,13 +212,31 @@ fn is_noop_intent(v: &serde_json::Value) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct Session {
+struct SessionSummary {
+    /// Session folder name under RUNS_ROOT.
+    id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SessionDetail {
     /// Session folder name under RUNS_ROOT.
     id: String,
     /// Browser URLs for frames (/runs/<id>/<subdir>/<file>).
     frames: Vec<String>,
     /// Per-frame events (mapped via stage.replay_frame_idx heuristic).
     events: Vec<FrontEvent>,
+    /// Total frames available on disk (before tailing).
+    frame_total: usize,
+    /// Total events available in telemetry (before tailing).
+    event_total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SessionPage {
+    total: usize,
+    offset: usize,
+    limit: usize,
+    sessions: Vec<SessionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -252,8 +271,30 @@ struct SeriesData {
 struct AppState {
     runs_root: PathBuf,
     static_dir: PathBuf,
-    sessions: Arc<RwLock<Vec<Session>>>,
+    session_ids: Arc<RwLock<Vec<String>>>,
 }
+
+#[derive(Debug, Default, FromForm)]
+struct SessionQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+    frames_tail: Option<usize>,
+    events_tail: Option<usize>,
+}
+
+#[derive(Debug, Default, FromForm)]
+struct SeriesQuery {
+    tail: Option<usize>,
+}
+
+const DEFAULT_SESSION_LIMIT: usize = 20;
+const MAX_SESSION_LIMIT: usize = 100;
+const DEFAULT_FRAMES_TAIL: usize = 200;
+const MAX_FRAMES_TAIL: usize = 5000;
+const DEFAULT_EVENTS_TAIL: usize = 1000;
+const MAX_EVENTS_TAIL: usize = 20000;
+const DEFAULT_SERIES_TAIL: usize = 1500;
+const MAX_SERIES_TAIL: usize = 20000;
 
 /** Public API functions below **/
 /// Spawn the Rocket server on a background thread.
@@ -298,8 +339,8 @@ pub fn spawn_replay_server(runs_root: impl Into<PathBuf>) -> (JoinHandle<Result<
                     );
                 }
 
-                // Initial scan (build session list for UI)
-                let sessions = match load_all_sessions(&runs_root) {
+                // Initial scan (session IDs only)
+                let session_ids = match load_session_ids(&runs_root) {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = ready_tx.send(Err(format!("initial session scan failed: {e:#}")));
@@ -310,7 +351,7 @@ pub fn spawn_replay_server(runs_root: impl Into<PathBuf>) -> (JoinHandle<Result<
                 let state = AppState {
                     runs_root: runs_root.clone(),
                     static_dir: static_dir.clone(),
-                    sessions: Arc::new(RwLock::new(sessions)),
+                    session_ids: Arc::new(RwLock::new(session_ids)),
                 };
 
                 // Build Rocket with custom figment (address/port)
@@ -406,25 +447,69 @@ async fn app_js_route(
         .map_err(|e| (ContentType::Plain, format!("ui.js read error: {e}")))
 }
 
-/// GET /sessions to list of sessions
-#[get("/sessions")]
-async fn get_sessions(state: &State<AppState>) -> Json<Vec<Session>> {
-    Json(state.sessions.read().unwrap().clone())
+/// GET /sessions to list of sessions (summaries only)
+#[get("/sessions?<q..>")]
+async fn get_sessions(state: &State<AppState>, q: Option<SessionQuery>) -> Json<SessionPage> {
+    let q = q.unwrap_or_default();
+    let limit = q.limit.unwrap_or(DEFAULT_SESSION_LIMIT).clamp(1, MAX_SESSION_LIMIT);
+    let offset = q.offset.unwrap_or(0);
+
+    let ids = state.session_ids.read().unwrap();
+    let total = ids.len();
+    let start = offset.min(total);
+    let end = (start + limit).min(total);
+
+    let sessions = ids[start..end]
+        .iter()
+        .map(|id| SessionSummary { id: id.clone() })
+        .collect();
+
+    Json(SessionPage {
+        total,
+        offset: start,
+        limit,
+        sessions,
+    })
 }
 
 /// GET /sessions/<id> to single session (frames+events)
-#[get("/sessions/<id>")]
-async fn get_session_one(id: String, state: &State<AppState>) -> Option<Json<Session>> {
-    let sessions = state.sessions.read().unwrap();
-    sessions.iter().find(|s| s.id == id).cloned().map(Json)
+#[get("/sessions/<id>?<q..>")]
+async fn get_session_one(
+    id: String,
+    state: &State<AppState>,
+    q: Option<SessionQuery>,
+) -> Option<Json<SessionDetail>> {
+    let q = q.unwrap_or_default();
+    let frames_tail = q
+        .frames_tail
+        .unwrap_or(DEFAULT_FRAMES_TAIL)
+        .clamp(0, MAX_FRAMES_TAIL);
+    let events_tail = q
+        .events_tail
+        .unwrap_or(DEFAULT_EVENTS_TAIL)
+        .clamp(0, MAX_EVENTS_TAIL);
+
+    load_session_detail(&state.runs_root, &id, frames_tail, events_tail)
+        .ok()
+        .map(Json)
 }
 
 /// GET /sessions/<id>/series to health[] & ticks[] from telemetry.log
-#[get("/sessions/<id>/series")]
-async fn get_session_series(id: String, state: &State<AppState>) -> Json<SeriesData> {
+#[get("/sessions/<id>/series?<q..>")]
+async fn get_session_series(
+    id: String,
+    state: &State<AppState>,
+    q: Option<SeriesQuery>,
+) -> Json<SeriesData> {
+    let q = q.unwrap_or_default();
+    let tail = q
+        .tail
+        .unwrap_or(DEFAULT_SERIES_TAIL)
+        .clamp(0, MAX_SERIES_TAIL);
+
     let path = state.runs_root.join(&id).join("telemetry.log");
     let series = if path.exists() {
-        build_series_from_telemetry(&path).unwrap_or_default()
+        build_series_from_telemetry(&path, Some(tail)).unwrap_or_default()
     } else {
         SeriesData::default()
     };
@@ -436,9 +521,9 @@ async fn get_session_series(id: String, state: &State<AppState>) -> Json<SeriesD
 async fn reload_sessions(
     state: &State<AppState>,
 ) -> std::result::Result<(ContentType, String), (ContentType, String)> {
-    match load_all_sessions(&state.runs_root) {
+    match load_session_ids(&state.runs_root) {
         Ok(new_sessions) => {
-            *state.sessions.write().unwrap() = new_sessions;
+            *state.session_ids.write().unwrap() = new_sessions;
             Ok((ContentType::Plain, "reloaded".into()))
         }
         Err(e) => Err((ContentType::Plain, format!("reload failed: {e:#}"))),
@@ -454,54 +539,73 @@ fn must_exist(path: &Path) -> Result<()> {
 }
 
 /// Discover sessions as folders under root. A session is valid if it has frames
-/// under <run>/frames (or fallback <run>/images). If <run>/telemetry.log
-/// exists, we parse it to create user-friendly per-frame events.
-fn load_all_sessions(root: &Path) -> Result<Vec<Session>> {
+/// under <run>/frames (or fallback <run>/images).
+fn load_session_ids(root: &Path) -> Result<Vec<String>> {
     if !root.exists() {
         return Ok(vec![]);
     }
 
-    let mut sessions = vec![];
+    let mut ids = vec![];
 
     for entry in fs::read_dir(root).with_context(|| format!("read_dir {}", root.display()))? {
         let entry = entry?;
         if !entry.metadata()?.is_dir() {
             continue;
         }
-
         let run_id = entry.file_name().to_string_lossy().to_string();
         let run_dir = entry.path();
-
-        let frames_dir = run_dir.join("frames");
-        let images_dir = run_dir.join("images");
-        let telemetry_path = run_dir.join("telemetry.log");
-
-        // Prefer frames/, then images/. Preserve subdir in URL.
-        let mut frames = collect_frames(&run_id, &frames_dir, "frames");
-        if frames.is_empty() {
-            frames = collect_frames(&run_id, &images_dir, "images");
-        }
-        if frames.is_empty() {
-            // Not a valid session; skip
+        if !run_dir.join("frames").exists() && !run_dir.join("images").exists() {
             continue;
         }
-
-        let events = if telemetry_path.exists() {
-            build_events_from_telemetry(&telemetry_path, &frames)
-        } else {
-            vec![]
-        };
-
-        sessions.push(Session {
-            id: run_id,
-            frames,
-            events,
-        });
+        ids.push(run_id);
     }
 
     // newest-first by id (if id encodes a timestamp)
-    sessions.sort_by(|a, b| b.id.cmp(&a.id));
-    Ok(sessions)
+    ids.sort_by(|a, b| b.cmp(a));
+    Ok(ids)
+}
+
+fn load_session_detail(
+    root: &Path,
+    run_id: &str,
+    frames_tail: usize,
+    events_tail: usize,
+) -> Result<SessionDetail> {
+    let run_dir = root.join(run_id);
+    if !run_dir.exists() {
+        bail!("session not found: {}", run_id);
+    }
+
+    let frames_dir = run_dir.join("frames");
+    let images_dir = run_dir.join("images");
+    let telemetry_path = run_dir.join("telemetry.log");
+
+    let (mut frames, mut frame_total) =
+        collect_frames(run_id, &frames_dir, "frames", Some(frames_tail));
+    if frames.is_empty() {
+        let (alt_frames, alt_total) =
+            collect_frames(run_id, &images_dir, "images", Some(frames_tail));
+        frames = alt_frames;
+        frame_total = alt_total;
+    }
+
+    if frames.is_empty() {
+        bail!("no frames found for session: {}", run_id);
+    }
+
+    let (events, event_total) = if telemetry_path.exists() {
+        build_events_from_telemetry(&telemetry_path, Some(events_tail))
+    } else {
+        (vec![], 0)
+    };
+
+    Ok(SessionDetail {
+        id: run_id.to_string(),
+        frames,
+        events,
+        frame_total,
+        event_total,
+    })
 }
 
 use std::time::SystemTime;
@@ -518,9 +622,14 @@ fn file_time(p: &Path) -> SystemTime {
 }
 
 // Collect image files and their timestamps from the given directory.
-fn collect_frames(run_id: &str, dir: &Path, web_subdir: &str) -> Vec<String> {
+fn collect_frames(
+    run_id: &str,
+    dir: &Path,
+    web_subdir: &str,
+    tail: Option<usize>,
+) -> (Vec<String>, usize) {
     if !dir.exists() {
-        return vec![];
+        return (vec![], 0);
     }
 
     // Gather (path, timestamp)
@@ -546,11 +655,18 @@ fn collect_frames(run_id: &str, dir: &Path, web_subdir: &str) -> Vec<String> {
     // Sort files in chronological order by timestamp, then name.
     files.sort_by(|(pa, ta), (pb, tb)| ta.cmp(tb).then_with(|| file_name_cmp(pa, pb)));
 
-    files
+    let total = files.len();
+    let tail = tail.unwrap_or(total).min(total);
+    let start = total.saturating_sub(tail);
+
+    let frames = files
         .into_iter()
+        .skip(start)
         .filter_map(|(p, _ts)| p.file_name().map(|os| os.to_string_lossy().to_string()))
         .map(|file| format!("/runs/{}/{}/{}", run_id, web_subdir, file))
-        .collect()
+        .collect();
+
+    (frames, total)
 }
 
 fn file_name_cmp(a: &Path, b: &Path) -> Ordering {
@@ -560,13 +676,34 @@ fn file_name_cmp(a: &Path, b: &Path) -> Ordering {
 }
 
 /// Parse telemetry.log into a compact series for the chart & runtime box.
-fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
+fn build_series_from_telemetry(path: &Path, tail: Option<usize>) -> Result<SeriesData> {
     let file =
         fs::File::open(path).with_context(|| format!("open telemetry log {}", path.display()))?;
     let reader = BufReader::new(file);
 
-    let mut health: Vec<SeriesHealth> = vec![];
-    let mut ticks: Vec<SeriesTick> = vec![];
+    let mut health: VecDeque<SeriesHealth> = VecDeque::new();
+    let mut ticks: VecDeque<SeriesTick> = VecDeque::new();
+    let max = tail.unwrap_or(usize::MAX);
+
+    let mut push_tail = |list: &mut VecDeque<SeriesHealth>, item: SeriesHealth| {
+        if max == 0 {
+            return;
+        }
+        if list.len() == max {
+            list.pop_front();
+        }
+        list.push_back(item);
+    };
+
+    let mut push_tail_tick = |list: &mut VecDeque<SeriesTick>, item: SeriesTick| {
+        if max == 0 {
+            return;
+        }
+        if list.len() == max {
+            list.pop_front();
+        }
+        list.push_back(item);
+    };
 
     for line in reader.lines().map_while(Result::ok) {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
@@ -575,14 +712,14 @@ fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
         let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
 
         match kind {
-            "health" => {
+            "health" | "health_stats" => {
                 if let (Some(ts), Some(cpu), Some(ram), Some(temp)) = (
                     as_u128_opt(&v, "ts"),
-                    as_f32_opt(&v, "cpu_pct"),
-                    as_f32_opt(&v, "ram_pct"),
-                    as_f32_opt(&v, "temp_c"),
+                    as_f32_any(&v, &["cpu_pct", "cpu", "cpu_percent"]),
+                    as_f32_any(&v, &["ram_pct", "ram", "mem_pct", "mem"]),
+                    as_f32_any(&v, &["temp_c", "temp", "temp_celsius"]),
                 ) {
-                    health.push(SeriesHealth {
+                    push_tail(&mut health, SeriesHealth {
                         ts,
                         cpu,
                         ram,
@@ -591,14 +728,15 @@ fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
                     });
                 }
             }
-            "tick_stats" => {
+            "tick_stats" | "tick" => {
                 let ts = as_u128_opt(&v, "ts");
-                let q = as_usize_opt(&v, "event_queue_len");
-                let mq = as_usize_opt(&v, "max_event_queue_len");
-                let shf = as_bool_opt(&v, "standby_has_frame");
-                let ahf = as_bool_opt(&v, "active_has_frame");
-                if let (Some(ts), Some(q), Some(mq), Some(shf), Some(ahf)) = (ts, q, mq, shf, ahf) {
-                    ticks.push(SeriesTick {
+                let q = as_usize_any(&v, &["event_queue_len", "queue_len", "queue"]);
+                let mq = as_usize_any(&v, &["max_event_queue_len", "max_queue_len", "max_queue"])
+                    .or(q);
+                let shf = as_bool_any(&v, &["standby_has_frame", "standby"]).unwrap_or(false);
+                let ahf = as_bool_any(&v, &["active_has_frame", "active"]).unwrap_or(false);
+                if let (Some(ts), Some(q), Some(mq)) = (ts, q, mq) {
+                    push_tail_tick(&mut ticks, SeriesTick {
                         ts,
                         queue: q,
                         max_queue: mq,
@@ -613,6 +751,9 @@ fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
     }
 
     // Ensure time series are ordered by timestamp.
+    let mut health: Vec<SeriesHealth> = health.into_iter().collect();
+    let mut ticks: Vec<SeriesTick> = ticks.into_iter().collect();
+
     if health.len() >= 2 && health.windows(2).any(|w| w[0].ts > w[1].ts) {
         health.sort_by_key(|h| h.ts);
     }
@@ -625,19 +766,21 @@ fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
 
 /// Build per-frame events from telemetry.log.
 /// Heuristic: remember the last replay_frame_idx from "stage" rows and attach subsequent events to that frame.
-fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEvent> {
+fn build_events_from_telemetry(path: &Path, tail: Option<usize>) -> (Vec<FrontEvent>, usize) {
     use std::collections::HashMap;
 
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error; cannot open telemetry.log {}: {e}", path.display());
-            return vec![];
+            return (vec![], 0);
         }
     };
     let reader = BufReader::new(file);
 
-    let mut events: Vec<FrontEvent> = vec![];
+    let mut events: VecDeque<FrontEvent> = VecDeque::new();
+    let max = tail.unwrap_or(usize::MAX);
+    let mut total_events = 0usize;
     let mut skipped_no_run = 0usize;
 
     // Anchor frame index per run (not used — always defaults to 0).
@@ -675,8 +818,15 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
         let f_for_ev = *last_f_by_run.get(&run_key).unwrap_or(&default_f);
 
         let mut push_ev = |txt: String, stage_override: Option<String>| {
+            total_events += 1;
+            if max == 0 {
+                return;
+            }
+            if events.len() == max {
+                events.pop_front();
+            }
             let stage = stage_override.or_else(|| stage_label.clone());
-            events.push(FrontEvent {
+            events.push_back(FrontEvent {
                 f: f_for_ev,
                 txt,
                 run: Some(run_key.clone()),
@@ -814,7 +964,7 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
         );
     }
 
-    events
+    (events.into_iter().collect(), total_events)
 }
 
 /** JSON helpers below **/
@@ -840,6 +990,15 @@ fn as_f32_opt(v: &Value, key: &str) -> Option<f32> {
         })
 }
 
+fn as_f32_any(v: &Value, keys: &[&str]) -> Option<f32> {
+    for key in keys {
+        if let Some(val) = as_f32_opt(v, key) {
+            return Some(val);
+        }
+    }
+    None
+}
+
 fn as_usize_opt(v: &Value, key: &str) -> Option<usize> {
     v.get(key)
         .and_then(|x| x.as_u64())
@@ -849,6 +1008,15 @@ fn as_usize_opt(v: &Value, key: &str) -> Option<usize> {
                 .and_then(|x| x.as_str())
                 .and_then(|s| s.parse::<usize>().ok())
         })
+}
+
+fn as_usize_any(v: &Value, keys: &[&str]) -> Option<usize> {
+    for key in keys {
+        if let Some(val) = as_usize_opt(v, key) {
+            return Some(val);
+        }
+    }
+    None
 }
 
 fn as_bool_opt(v: &Value, key: &str) -> Option<bool> {
@@ -861,4 +1029,13 @@ fn as_bool_opt(v: &Value, key: &str) -> Option<bool> {
                 _ => None,
             })
     })
+}
+
+fn as_bool_any(v: &Value, keys: &[&str]) -> Option<bool> {
+    for key in keys {
+        if let Some(val) = as_bool_opt(v, key) {
+            return Some(val);
+        }
+    }
+    None
 }

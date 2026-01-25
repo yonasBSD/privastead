@@ -44,6 +44,14 @@ header h1 { font-size: 1.05rem; }
 .session-list li { padding: .35rem .55rem; cursor:pointer; border-radius:6px; }
 .session-list li:hover { background:#e9ecf1; }
 .session-list li.selected { background:var(--brand); color:#fff; }
+.session-footer { margin-top: .6rem; display:flex; flex-direction:column; gap: 8px; }
+.session-footer button {
+  border:0; background:#e9ecf1; color:#18202a;
+  padding:.35rem .6rem; border-radius:6px; cursor:pointer;
+  width: 100%;
+}
+.session-footer button:hover { background:#dfe4ec; }
+.session-footer button:disabled { opacity:.5; cursor:default; }
 
 /* content */
 .content { display:flex; flex-direction:column; gap: 12px; padding: 12px 16px; }
@@ -78,7 +86,8 @@ header h1 { font-size: 1.05rem; }
   gap: 8px;
 }
 .controls__left, .controls__mid { display:flex; align-items:center; gap: 8px; }
-.controls__right { display:flex; justify-content:flex-end; }
+.controls__right { display:flex; justify-content:flex-end; align-items:center; gap: 8px; }
+#data-meta { font-size: 12px; }
 .controls button {
   border:0; background:#e9ecf1; color:#18202a;
   padding:.4rem .6rem; border-radius:6px; cursor:pointer;
