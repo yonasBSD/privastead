@@ -96,10 +96,12 @@ impl PipelineStage for MotionStage {
                     ts,
                     reason: "no_motion",
                 })?;
+                telemetry.reject_run(&ctx.run_id);
                 Ok(StageResult::Drop("no motion detected".into()))
             }
         } else {
             //Err
+            telemetry.reject_run(&ctx.run_id);
             Ok(StageResult::Fault(
                 "Failed to process motion detection for this frame".into(),
             ))
@@ -136,6 +138,7 @@ impl PipelineStage for InferenceStage {
                 ts,
                 reason: "use_inference=false",
             })?;
+            telemetry.reject_run(&ctx.run_id);
             return Ok(StageResult::Continue);
         }
 
@@ -155,6 +158,7 @@ impl PipelineStage for InferenceStage {
                     ts,
                     reason: "infer_error",
                 })?;
+                telemetry.reject_run(&ctx.run_id);
                 return Ok(StageResult::Fault("Failed to run model".into()));
             }
         };
@@ -181,6 +185,7 @@ impl PipelineStage for InferenceStage {
                     ts,
                     reason: "io_error:save_png",
                 })?;
+                telemetry.reject_run(&ctx.run_id);
                 return Ok(StageResult::Fault("Failed to write image".into()));
             }
         };
@@ -198,6 +203,7 @@ impl PipelineStage for InferenceStage {
 
         if let Err(e) = telemetry.write(&pkt) {
             log::error!("Telemetry write error: {e:?}");
+            telemetry.reject_run(&ctx.run_id);
             return Ok(StageResult::Fault("Failed to write telemetry".into()));
         }
 
@@ -219,6 +225,7 @@ impl PipelineStage for InferenceStage {
                 thumbnail: frame.clone(),
             });
             debug!("Updating detection results: {}", detection_results.len());
+            telemetry.approve_run(&ctx.run_id);
             Ok(StageResult::Continue)
         } else {
             let ts = SystemTime::now()
@@ -230,6 +237,7 @@ impl PipelineStage for InferenceStage {
                 ts,
                 reason: "no_human",
             })?;
+            telemetry.reject_run(&ctx.run_id);
             Ok(StageResult::Drop("no human detected".into()))
         }
     }

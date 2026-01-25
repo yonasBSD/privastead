@@ -99,9 +99,9 @@ fn generate_user_credentials(dir: String, mut server_addr: String) {
         .unwrap();
 
     // Save the credentials_full in a file to be used for testing with the example app
-    let mut file =
-        fs::File::create(dir.clone() + "/user_credentials_for_testing").expect("Could not create file");
-    let _ = file.write_all(&credentials_full);
+   // let mut file =
+   //     fs::File::create(dir.clone() + "/user_credentials_for_testing").expect("Could not create file");
+   // let _ = file.write_all(&credentials_full);
 
     println!("Generated!")
 }

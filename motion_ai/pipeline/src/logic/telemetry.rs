@@ -7,6 +7,7 @@ use crossbeam_channel::{Sender, TrySendError, bounded, select, tick};
 use serde::Serialize;
 use std::io::BufWriter;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -131,6 +132,26 @@ pub enum TelemetryPacket<'a> {
     },
 }
 
+impl TelemetryPacket<'_> {
+    fn run_key(&self) -> Option<&str> {
+        match self {
+            TelemetryPacket::Stage { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::TickStats { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::MotionMetrics { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::DroppedFrame { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::InferenceSkipped { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::Health { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::ModelSwitch { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::StateDuration { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::DetectionsSummary { run_id, .. } => Some(*run_id),
+            TelemetryPacket::FSMTransition { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::Detection { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::StageDuration { run_id, .. } => Some(run_id.0.as_str()),
+            TelemetryPacket::IntentTriggered { run_id, .. } => Some(run_id.0.as_str()),
+        }
+    }
+}
+
 /*
 pub enum FrameExport {
     InitialFrame,
@@ -148,9 +169,11 @@ pub enum FrameExport {
 pub struct TelemetryRun {
     pub run_id: String,
     activated: bool,
+    save_all: bool,
     tx: Option<Sender<TelemetryMsg>>,
     handle: Option<JoinHandle<()>>,
     dropped: Arc<AtomicU64>,
+    gate: Mutex<RunGate>,
 }
 
 enum TelemetryMsg {
@@ -159,10 +182,33 @@ enum TelemetryMsg {
     Shutdown,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum GateState {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+struct RunGate {
+    run_key: Option<String>,
+    state: GateState,
+    pending: Vec<String>,
+}
+
+impl Default for RunGate {
+    fn default() -> Self {
+        Self {
+            run_key: None,
+            state: GateState::Pending,
+            pending: Vec::new(),
+        }
+    }
+}
+
 impl TelemetryRun {
     /// Create a run directory, spawn writer thread if activated.
     /// Batches up to BATCH_MAX lines or FLUSH_EVERY duration, whichever comes first.
-    pub fn new(activated: bool) -> Result<Self, anyhow::Error> {
+    pub fn new(activated: bool, save_all: bool) -> Result<Self, anyhow::Error> {
         let run_id = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
         SAVE_IMAGES.store(activated, Ordering::Relaxed);
 
@@ -170,9 +216,11 @@ impl TelemetryRun {
             return Ok(Self {
                 run_id,
                 activated: false,
+                save_all,
                 tx: None,
                 handle: None,
                 dropped: Arc::new(AtomicU64::new(0)),
+                gate: Mutex::new(RunGate::default()),
             });
         }
 
@@ -248,9 +296,11 @@ impl TelemetryRun {
         Ok(Self {
             run_id,
             activated: true,
+            save_all,
             tx: Some(tx),
             handle: Some(handle),
             dropped,
+            gate: Mutex::new(RunGate::default()),
         })
     }
 
@@ -259,12 +309,79 @@ impl TelemetryRun {
         if !self.activated {
             return Ok(());
         }
-        let Some(tx) = &self.tx else {
-            return Ok(());
-        };
 
         // Serialize outside worker to minimize critical section in writer
         let line = serde_json::to_string(pkt)?;
+
+        if self.save_all {
+            return self.try_send_line(line);
+        }
+
+        if let Some(run_key) = pkt.run_key() {
+            let mut gate = self.gate.lock().unwrap();
+            if gate.run_key.as_deref() != Some(run_key) {
+                gate.run_key = Some(run_key.to_string());
+                gate.state = GateState::Pending;
+                gate.pending.clear();
+            }
+
+            match gate.state {
+                GateState::Approved => {
+                    drop(gate);
+                    return self.try_send_line(line);
+                }
+                GateState::Rejected => return Ok(()),
+                GateState::Pending => {
+                    gate.pending.push(line);
+                    return Ok(());
+                }
+            }
+        }
+
+        self.try_send_line(line)
+    }
+
+    /// Allow telemetry for a run and flush any buffered packets.
+    pub fn approve_run(&self, run_id: &RunId) {
+        if !self.activated || self.save_all {
+            return;
+        }
+
+        let run_key = run_id.0.as_str();
+        let pending = {
+            let mut gate = self.gate.lock().unwrap();
+            if gate.run_key.as_deref() != Some(run_key) {
+                gate.run_key = Some(run_key.to_string());
+                gate.pending.clear();
+            }
+            gate.state = GateState::Approved;
+            std::mem::take(&mut gate.pending)
+        };
+
+        for line in pending {
+            let _ = self.try_send_line(line);
+        }
+    }
+
+    /// Reject telemetry for a run and discard any buffered packets.
+    pub fn reject_run(&self, run_id: &RunId) {
+        if !self.activated || self.save_all {
+            return;
+        }
+
+        let run_key = run_id.0.as_str();
+        let mut gate = self.gate.lock().unwrap();
+        if gate.run_key.as_deref() != Some(run_key) {
+            gate.run_key = Some(run_key.to_string());
+        }
+        gate.state = GateState::Rejected;
+        gate.pending.clear();
+    }
+
+    fn try_send_line(&self, line: String) -> Result<(), anyhow::Error> {
+        let Some(tx) = &self.tx else {
+            return Ok(());
+        };
 
         // Non-blocking fast path
         match tx.try_send(TelemetryMsg::Line(line)) {

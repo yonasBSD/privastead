@@ -84,11 +84,11 @@ const USAGE: &str = "
 Secluso camera hub: connects to an IP camera and send videos to the secluso app end-to-end encrypted (through an untrusted server).
 
 Usage:
-  secluso-camera-hub
-  secluso-camera-hub --reset
-  secluso-camera-hub --reset-full
-  secluso-camera-hub --test-motion
-  secluso-camera-hub --test-livestream
+  secluso-camera-hub [--save-all]
+  secluso-camera-hub [--save-all] --reset
+  secluso-camera-hub [--save-all] --reset-full
+  secluso-camera-hub [--save-all] --test-motion
+  secluso-camera-hub [--save-all] --test-livestream
   secluso-camera-hub (--version | -v)
   secluso-camera-hub (--help | -h)
 
@@ -97,6 +97,7 @@ Options:
     --reset-full        Wipe all the state and pending videos
     --test-motion       Used for testing motion videos
     --test-livestream   Used for testing video livestreaming
+    --save-all          Save all telemetry events, not just human detections
     --version, -v       Show version
     --help, -h          Show help
 ";
@@ -106,6 +107,7 @@ struct Args {
     flag_reset: bool,
     flag_reset_full: bool,
     flag_test_motion: bool,
+    flag_save_all: bool,
     #[cfg(feature = "ip")]
     flag_test_livestream: bool,
 }
@@ -136,6 +138,7 @@ fn main() -> io::Result<()> {
                 VIDEO_DIR_GENERAL.to_string(),
                 THUMBNAIL_DIR_GENERAL.to_string(),
                 1,
+                args.flag_save_all,
             );
 
             let camera_list: Vec<Box<dyn Camera + Send>> = vec![Box::new(camera)];

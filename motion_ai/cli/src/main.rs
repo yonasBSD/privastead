@@ -94,7 +94,7 @@ fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
     ];
 
     // Create and start controller
-    let mut new_controller = PipelineController::new(pipeline, true)?;
+    let mut new_controller = PipelineController::new(pipeline, true, false)?;
     new_controller.start_working();
     let controller = Arc::new(Mutex::new(new_controller));
     let controller_clone = Arc::clone(&controller);

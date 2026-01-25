@@ -33,6 +33,154 @@ struct FrontEvent {
     ts: Option<u128>, // optional timestamp
 }
 
+// Normalizes a UUID-like string into the standard lowercase dashed format.
+fn canon_uuid_like(s: &str) -> String {
+    let t = s.trim().trim_matches(|c| c == '{' || c == '}').to_lowercase();
+    // already dashed UUID?
+    if t.len() == 36
+        && t.as_bytes().get(8) == Some(&b'-')
+        && t.as_bytes().get(13) == Some(&b'-')
+        && t.as_bytes().get(18) == Some(&b'-')
+        && t.as_bytes().get(23) == Some(&b'-')
+        && t.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return t;
+    }
+    // 32 hex (no dashes) -> dashify
+    if t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return format!(
+            "{}-{}-{}-{}-{}",
+            &t[0..8],
+            &t[8..12],
+            &t[12..16],
+            &t[16..20],
+            &t[20..32]
+        );
+    }
+    // otherwise keep as-is (lowercased)
+    t
+}
+
+fn run_key_from_json(v: &Value) -> Option<String> {
+    // direct string
+    if let Some(s) = v.get("run_id").and_then(|x| x.as_str()) {
+        let k = canon_uuid_like(s);
+        if !k.is_empty() {
+            return Some(k);
+        }
+    }
+    // object (RunId struct)
+    if let Some(obj) = v.get("run_id").and_then(|x| x.as_object()) {
+        for k in [
+            "uuid", "id", "short", "value", "Short", "Id", "UUID", "Value", "short_id", "ShortId",
+        ] {
+            if let Some(s) = obj.get(k).and_then(|x| x.as_str()) {
+                let kk = canon_uuid_like(s);
+                if !kk.is_empty() {
+                    return Some(kk);
+                }
+            }
+        }
+        // fallback: stringify whole object
+        let kk = canon_uuid_like(&v.get("run_id").unwrap().to_string());
+        if !kk.is_empty() {
+            return Some(kk);
+        }
+    }
+    None
+}
+
+const COCO_LABELS: [&str; 80] = [
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "dining table",
+    "toilet",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
+    "toothbrush",
+];
+
+fn coco_label_name(label: i32) -> &'static str {
+    if label >= 0 && (label as usize) < COCO_LABELS.len() {
+        COCO_LABELS[label as usize]
+    } else {
+        "unknown"
+    }
+}
+
 fn is_noop_intent(v: &serde_json::Value) -> bool {
     if let Some(s) = v.get("intent").and_then(|x| x.as_str()) {
         let s = s.to_ascii_lowercase();
@@ -78,6 +226,8 @@ struct SeriesHealth {
     cpu: f32,
     ram: f32,
     temp: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +237,8 @@ struct SeriesTick {
     max_queue: usize,
     standby: bool,
     active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -430,7 +582,13 @@ fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
                     as_f32_opt(&v, "ram_pct"),
                     as_f32_opt(&v, "temp_c"),
                 ) {
-                    health.push(SeriesHealth { ts, cpu, ram, temp });
+                    health.push(SeriesHealth {
+                        ts,
+                        cpu,
+                        ram,
+                        temp,
+                        run: run_key_from_json(&v),
+                    });
                 }
             }
             "tick_stats" => {
@@ -446,6 +604,7 @@ fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
                         max_queue: mq,
                         standby: shf,
                         active: ahf,
+                        run: run_key_from_json(&v),
                     });
                 }
             }
@@ -477,67 +636,6 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
         }
     };
     let reader = BufReader::new(file);
-
-    // Normalizes a UUID-like string into the standard lowercase dashed format.
-    fn canon_uuid_like(s: &str) -> String {
-        let t = s
-            .trim()
-            .trim_matches(|c| c == '{' || c == '}')
-            .to_lowercase();
-        // already dashed UUID?
-        if t.len() == 36
-            && t.as_bytes().get(8) == Some(&b'-')
-            && t.as_bytes().get(13) == Some(&b'-')
-            && t.as_bytes().get(18) == Some(&b'-')
-            && t.as_bytes().get(23) == Some(&b'-')
-            && t.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-        {
-            return t;
-        }
-        // 32 hex (no dashes) -> dashify
-        if t.len() == 32 && t.chars().all(|c| c.is_ascii_hexdigit()) {
-            return format!(
-                "{}-{}-{}-{}-{}",
-                &t[0..8],
-                &t[8..12],
-                &t[12..16],
-                &t[16..20],
-                &t[20..32]
-            );
-        }
-        // otherwise keep as-is (lowercased)
-        t
-    }
-
-    fn run_key_from_json(v: &Value) -> Option<String> {
-        // direct string
-        if let Some(s) = v.get("run_id").and_then(|x| x.as_str()) {
-            let k = canon_uuid_like(s);
-            if !k.is_empty() {
-                return Some(k);
-            }
-        }
-        // object (RunId struct)
-        if let Some(obj) = v.get("run_id").and_then(|x| x.as_object()) {
-            for k in [
-                "uuid", "id", "short", "value", "Short", "Id", "UUID", "Value", "short_id",
-                "ShortId",
-            ] {
-                if let Some(s) = obj.get(k).and_then(|x| x.as_str()) {
-                    let kk = canon_uuid_like(s);
-                    if !kk.is_empty() {
-                        return Some(kk);
-                    }
-                }
-            }
-            // fallback: stringify whole object
-            let kk = canon_uuid_like(&v.get("run_id").unwrap().to_string());
-            if !kk.is_empty() {
-                return Some(kk);
-            }
-        }
-        None
-    }
 
     let mut events: Vec<FrontEvent> = vec![];
     let mut skipped_no_run = 0usize;
@@ -576,43 +674,45 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
         // Anchor frame index — required for frame mapping but defaulted to 0.
         let f_for_ev = *last_f_by_run.get(&run_key).unwrap_or(&default_f);
 
-        let mut push_ev = |txt: String| {
+        let mut push_ev = |txt: String, stage_override: Option<String>| {
+            let stage = stage_override.or_else(|| stage_label.clone());
             events.push(FrontEvent {
                 f: f_for_ev,
                 txt,
                 run: Some(run_key.clone()),
-                stage: stage_label.clone(),
+                stage,
                 ts,
             });
         };
 
         match kind {
             "detection" => {
+                let dets = v.get("detections").and_then(|x| x.as_u64()).unwrap_or(0);
                 let txt = if let Some(ms) = v.get("latency_ms").and_then(|x| x.as_u64()) {
-                    format!("InferenceCompleted ({} ms)", ms)
+                    format!("InferenceCompleted: {} detections ({} ms)", dets, ms)
                 } else {
-                    "InferenceCompleted".to_string()
+                    format!("InferenceCompleted: {} detections", dets)
                 };
-                push_ev(txt);
+                push_ev(txt, None);
             }
             "fsm_transition" => {
                 let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("?");
                 let to = v.get("to").and_then(|x| x.as_str()).unwrap_or("?");
-                push_ev(format!("{} ➜ {}", from, to));
+                push_ev(format!("{} ➜ {}", from, to), None);
             }
             "dropped_frame" => {
                 let reason = v
                     .get("reason")
                     .and_then(|x| x.as_str())
                     .unwrap_or("unknown");
-                push_ev(format!("Dropped: {}", reason));
+                push_ev(format!("Dropped: {}", reason), None);
             }
             "inference_skipped" => {
                 let reason = v
                     .get("reason")
                     .and_then(|x| x.as_str())
                     .unwrap_or("unknown");
-                push_ev(format!("InferenceSkipped: {}", reason));
+                push_ev(format!("InferenceSkipped: {}", reason), None);
             }
             "stage_duration" => {
                 if let Some(ms) = v.get("duration_ms").and_then(|x| x.as_u64())
@@ -622,7 +722,7 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
                         v.get("stage_kind").and_then(|s| s.as_str()),
                     )
                 {
-                    push_ev(format!("{}:{} took {} ms", kind2, name, ms));
+                    push_ev(format!("{}:{} took {} ms", kind2, name, ms), None);
                 }
             }
             "state_duration" => {
@@ -632,7 +732,7 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
                         .or_else(|| v.get("activity").and_then(|s| s.as_str())),
                     v.get("duration_ms").and_then(|x| x.as_u64()),
                 ) {
-                    push_ev(format!("activity:{} took {} ms", activity, ms));
+                    push_ev(format!("activity:{} took {} ms", activity, ms), None);
                 }
             }
             "model_switch" => {
@@ -647,7 +747,7 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
                 if !health.is_empty() {
                     s.push_str(&format!(" [{health}]"));
                 }
-                push_ev(s);
+                push_ev(s, None);
             }
             "motion_metrics" => {
                 if let (Some(tp), Some(cp), Some(th), Some(w_b)) = (
@@ -656,20 +756,44 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
                     v.get("threshold").and_then(|x| x.as_u64()),
                     v.get("w_b").and_then(|x| x.as_f64()),
                 ) {
-                    push_ev(format!("Motion pts {}/{} thr {} w_b {}", cp, tp, th, w_b));
+                    push_ev(format!("Motion pts {}/{} thr {} w_b {}", cp, tp, th, w_b), None);
                 }
             }
             "detections_summary" => {
                 if let Some(arr) = v.get("label_stats").and_then(|x| x.as_array()) {
-                    let labels = arr.len();
-                    let total: usize = arr
+                    let mut stats: Vec<(i32, usize, f32, f32)> = vec![];
+                    for row in arr {
+                        let Some(label) = row.get(0).and_then(|x| x.as_i64()) else {
+                            continue;
+                        };
+                        let Some(count) = row.get(1).and_then(|x| x.as_u64()) else {
+                            continue;
+                        };
+                        let avg = row.get(2).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+                        let max = row.get(3).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+                        stats.push((label as i32, count as usize, avg, max));
+                    }
+                    stats.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.3.partial_cmp(&a.3).unwrap_or(Ordering::Equal)));
+                    let total: usize = stats.iter().map(|(_, count, _, _)| *count).sum();
+                    let mut parts: Vec<String> = stats
                         .iter()
-                        .filter_map(|t| t.get(1).and_then(|n| n.as_u64()))
-                        .map(|u| u as usize)
-                        .sum();
-                    push_ev(format!(
-                        "Detections summary: {labels} labels, total {total}"
-                    ));
+                        .take(5)
+                        .map(|(label, count, avg, max)| {
+                            let name = coco_label_name(*label);
+                            format!("{name} x{count} (avg {avg:.2}, max {max:.2})")
+                        })
+                        .collect();
+                    if stats.len() > 5 {
+                        parts.push(format!("+{} more", stats.len() - 5));
+                    }
+                    if parts.is_empty() {
+                        push_ev("Detections: none".to_string(), Some("detections".into()));
+                    } else {
+                        push_ev(
+                            format!("Detections: {} (total {total})", parts.join("; ")),
+                            Some("detections".into()),
+                        );
+                    }
                 }
             }
             "intent_triggered" | "intent" => {
@@ -677,7 +801,7 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
                     continue;
                 }
                 let intent_str = v.get("intent").unwrap();
-                push_ev(format!("Intent: {}", intent_str));
+                push_ev(format!("Intent: {}", intent_str), None);
             }
             _ => { /* ignore */ }
         }

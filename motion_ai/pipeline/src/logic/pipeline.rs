@@ -66,6 +66,7 @@ impl Pipeline {
                     ts,
                     reason: "frame_missing",
                 })?;
+                telemetry.reject_run(&ctx.run_id);
                 return Ok(StageResult::Drop("no frame found".into()));
             }
         };
@@ -217,7 +218,7 @@ pub struct PipelineResult {
 /// and reacting to state transitions.
 impl PipelineController {
     /// Constructs and initializes the pipeline controller and FSM registries.
-    pub fn new(pipeline: Pipeline, write_logs: bool) -> Result<Self, anyhow::Error> {
+    pub fn new(pipeline: Pipeline, write_logs: bool, save_all: bool) -> Result<Self, anyhow::Error> {
         let mut activity_registry: FsmRegistry<ActivityState> = FsmRegistry {
             handlers: HashMap::new(),
         };
@@ -262,7 +263,7 @@ impl PipelineController {
                     standby: None,
                     active: None,
                 },
-                telemetry: TelemetryRun::new(write_logs)?,
+                telemetry: TelemetryRun::new(write_logs, save_all)?,
                 latest_detections: Vec::new(),
             },
             last_activity_change: None,

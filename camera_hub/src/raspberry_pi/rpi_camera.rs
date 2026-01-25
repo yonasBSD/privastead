@@ -83,6 +83,7 @@ impl RaspberryPiCamera {
         video_dir: String,
         thumbnail_dir: String,
         motion_fps: u64,
+        save_all: bool,
     ) -> Self {
         println!("Initializing Raspberry Pi Camera...");
 
@@ -100,7 +101,7 @@ impl RaspberryPiCamera {
 
         let write_logs = cfg!(feature = "telemetry");
         println!("Telemetry Output Enabled: {write_logs}");
-        let mut new_controller = match PipelineController::new(pipeline, write_logs) {
+        let mut new_controller = match PipelineController::new(pipeline, write_logs, save_all) {
             Ok(c) => c,
             Err(_) => {
                 panic!("Failed to instantiate pipeline controller");

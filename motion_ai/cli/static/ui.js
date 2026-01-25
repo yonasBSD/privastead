@@ -42,6 +42,9 @@
     let groups = [];
     let gidx = 0;
     let ridx = 0;
+    const AUTO_REFRESH_MS = 5000;
+    let reloadInFlight = false;
+    let autoReloadId = null;
 
     /* init */
     document.addEventListener("DOMContentLoaded", init);
@@ -59,6 +62,7 @@
         wireChartHover();
         updateLegendValues();
         drawChart();
+        startAutoRefresh();
     }
 
     /* legend */
@@ -112,6 +116,7 @@
     function wireChartHover() {
         if (!canvas) return;
         canvas.addEventListener("mousemove", onCanvasHover);
+        canvas.addEventListener("click", onCanvasClick);
         canvas.addEventListener("mouseleave", () => {
             hoverIndex = null;
             updateLegendValues();
@@ -134,6 +139,25 @@
         drawChart();
     }
 
+    function onCanvasClick(ev) {
+        const ser = sid && seriesCache.get(sid);
+        const health = ser && Array.isArray(ser.health) ? ser.health : [];
+        if (health.length < 2) return;
+        const idx = sampleIndexFromEvent(ev, health.length);
+        const runKey = canonRunKey(health[idx]?.run || "");
+        if (!isConcreteRunKey(runKey)) return;
+        const target = groups.findIndex(g => g.runId === runKey);
+        if (target < 0) return;
+        gidx = target;
+        ridx = 0;
+        hoverIndex = null;
+        renderGroupFrames();
+        updateFrameUI();
+        renderUnifiedLog();
+        updateGroupLabel();
+        drawChart();
+    }
+
     /* data */
     async function fetchSessions() {
         try {
@@ -146,8 +170,9 @@
         }
     }
 
-    async function fetchSeries(id) {
-        if (seriesCache.has(id)) return seriesCache.get(id);
+    async function fetchSeries(id, refresh = false) {
+        if (!id) return {health: [], ticks: []};
+        if (!refresh && seriesCache.has(id)) return seriesCache.get(id);
         let data = {health: [], ticks: []};
         try {
             const res = await fetch(`/sessions/${encodeURIComponent(id)}/series`, {headers: {"Accept": "application/json"}});
@@ -180,7 +205,7 @@
         renderGroupFrames();
         updateFrameUI();
         updateGroupLabel();
-        await fetchSeries(id);
+        await fetchSeries(id, true);
         drawChart();
         updateRuntimeBox();
         renderUnifiedLog();
@@ -868,24 +893,36 @@
     }
 
     /* reload */
-    async function reloadSessions() {
+    async function reloadSessions(opts = {}) {
+        const preserveView = opts.preserveView === true;
+        if (reloadInFlight) return;
+        reloadInFlight = true;
+        const prevSid = sid;
+        const prevSessions = sessions.slice();
+        const prevById = new Map(prevSessions.map(s => [s.id, s]));
         try {
             const res = await fetch("/reload", {method: "POST"});
             if (!res.ok) throw new Error(`POST /reload failed: ${res.status}`);
             await fetchSessions();
+            if (preserveView && prevSid) {
+                const prevCurrent = prevById.get(prevSid);
+                if (prevCurrent && sessions.find(s => s.id === prevSid)) {
+                    sessions = sessions.map(s => (s.id === prevSid ? prevCurrent : s));
+                }
+            }
             renderSessionList();
             if (!sid && sessions.length > 0) {
                 await selectSession(sessions[0].id);
             } else if (sid && !sessions.find(s => s.id === sid)) {
                 await selectSession(sessions[0]?.id || null);
-            } else {
+            } else if (!preserveView) {
                 const s = current();
                 groups = buildGroups(s.frames, s.events);
                 gidx = clamp(gidx, 0, Math.max(0, groups.length - 1));
                 ridx = 0;
                 renderGroupFrames();
                 updateFrameUI();
-                await fetchSeries(sid);
+                await fetchSeries(sid, true);
                 drawChart();
                 updateRuntimeBox();
                 renderUnifiedLog();
@@ -893,7 +930,27 @@
             }
         } catch (err) {
             console.error(err);
+        } finally {
+            reloadInFlight = false;
         }
+    }
+
+    function startAutoRefresh() {
+        if (autoReloadId) return;
+        autoReloadId = setInterval(() => {
+            if (document.hidden) return;
+            reloadSessions({preserveView: true});
+        }, AUTO_REFRESH_MS);
+    }
+
+    function sampleIndexFromEvent(ev, count) {
+        const rect = canvas.getBoundingClientRect();
+        const x = ev.clientX - rect.left;
+        const W = canvas.clientWidth || canvas.parentElement.clientWidth || 900;
+        const padL = 52, padR = 60;
+        const plotW = Math.max(0, W - padL - padR);
+        const rel = clamp((x - padL) / plotW, 0, 1);
+        return Math.round(rel * (count - 1));
     }
 
     window.replayReload = reloadSessions;

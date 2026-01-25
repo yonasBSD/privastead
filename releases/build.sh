@@ -375,6 +375,12 @@ if [[ "$TARGET" == "raspberry" ]]; then
     motion_ai_cli)PKGS=( "motion_ai_cli" ) ;;
     *) echo "Invalid profile for raspberry: $PROFILE" >&2; exit 1 ;;
   esac
+elif [[ "$TARGET" == "server" ]]; then
+  TRIPLES=( "x86_64-unknown-linux-gnu" )
+  case "$PROFILE" in
+    server)PKGS=( "server" ) ;;
+    *) echo "Invalid profile for ipcamera: $PROFILE" >&2; exit 1 ;;
+  esac
 elif [[ "$TARGET" == "ipcamera" ]]; then
   TRIPLES=( "x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu" )
   case "$PROFILE" in
