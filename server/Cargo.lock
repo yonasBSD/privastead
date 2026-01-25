@@ -1515,10 +1515,19 @@ dependencies = [
  "reqwest",
  "rocket",
  "secluso-client-server-lib",
+ "secluso-server-backbone",
  "serde",
  "serde_json",
  "subtle",
  "time",
+]
+
+[[package]]
+name = "secluso-server-backbone"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

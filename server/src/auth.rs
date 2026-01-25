@@ -173,7 +173,12 @@ fn decode_basic_auth(auth_value: &str) -> Option<(String, String)> {
 
 pub fn initialize_users() -> UserStore {
     let mut users = HashMap::new();
-    let dir = "./user_credentials".to_string();
+    if std::env::var("SECLUSO_SKIP_USER_CREDENTIALS").is_ok() {
+        return Mutex::new(users);
+    }
+
+    let dir = std::env::var("SECLUSO_USER_CREDENTIALS_DIR")
+        .unwrap_or_else(|_| "./user_credentials".to_string());
     match fs::read_dir(dir.clone()) {
         Ok(files) => {
             for file in files {

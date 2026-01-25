@@ -20,7 +20,6 @@ use rocket::data::{Data, ToByteUnit};
 use rocket::response::content::RawText;
 use rocket::response::stream::{Event, EventStream};
 use rocket::serde::json::Json;
-use rocket::serde::Deserialize;
 use rocket::{Request, Response, tokio};
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::select;
@@ -29,20 +28,21 @@ use rocket::tokio::sync::Notify;
 use rocket::tokio::task;
 use rocket::tokio::time::timeout;
 use rocket::Shutdown;
-use serde::Serialize;
-use serde_json::Number;
+use secluso_server_backbone::types::{
+    ConfigResponse, GroupTimestamp, MotionPairs, PairingRequest, PairingResponse, ServerStatus,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
 
-mod auth;
-mod fcm;
-mod security;
+pub mod auth;
+pub mod fcm;
+pub mod security;
 
-use crate::auth::{initialize_users, BasicAuth, FailStore};
-use crate::fcm::{send_notification, ConfigResponse};
-use crate::security::check_path_sandboxed;
+use self::auth::{initialize_users, BasicAuth, FailStore};
+use self::fcm::send_notification;
+use self::security::check_path_sandboxed;
 
 // Store the version of the current crate, which we'll use in all responses.
 #[derive(Default, Clone)]
@@ -75,25 +75,6 @@ struct EventState {
     events: Arc<DashMap<String, String>>, // <Camera, Event Msg>
 }
 
-// Bulk check JSON structures
-
-#[derive(Deserialize)]
-struct MotionPair {
-    group_name: String,
-    epoch_to_check: Number,
-}
-
-#[derive(Deserialize)]
-struct MotionPairs {
-    group_names: Vec<MotionPair>,
-}
-
-#[derive(Serialize)]
-struct GroupTimestamp {
-    group_name: String,
-    timestamp: i64,
-}
-
 // Pairing structures
 #[derive(Debug)]
 struct PairingEntry {
@@ -104,23 +85,6 @@ struct PairingEntry {
     created_at: Instant,
     notify: Arc<Notify>,
     expired: bool,
-}
-
-#[derive(serde::Deserialize)]
-struct PairingRequest {
-    pairing_token: String,
-    role: String,
-}
-
-#[derive(serde::Serialize)]
-struct PairingResponse {
-    status: String,
-}
-
-// Store whether the server is OK and the current version. Allows sanity check from the mobile app.
-#[derive(serde::Serialize)]
-struct ServerStatus {
-    ok: bool,
 }
 
 type SharedPairingState = Arc<Mutex<HashMap<String, Arc<Mutex<PairingEntry>>>>>;
@@ -854,7 +818,11 @@ async fn upload_debug_logs(data: Data<'_>, auth: BasicAuth) -> io::Result<String
 }
 
 #[launch]
-fn rocket() -> _ {
+fn rocket() -> rocket::Rocket<rocket::Build> {
+    build_rocket()
+}
+
+pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     let all_event_state: AllEventState = Arc::new(DashMap::new());
     let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
     let failure_store: FailStore = Arc::new(DashMap::new());
@@ -886,8 +854,13 @@ fn rocket() -> _ {
         ..rocket::Config::default()
     };
 
-    // Fetch the relevant app FCM data and store globally for future requests asking for it
-    let fcm_config = fcm::fetch_config().expect("Failed to fetch config");
+    // Fetch the relevant app FCM data and store globally for future requests asking for it.
+    // Tests and local tooling can skip this with SECLUSO_SKIP_FCM_CONFIG=1.
+    let fcm_config = if std::env::var("SECLUSO_SKIP_FCM_CONFIG").is_ok() {
+        ConfigResponse::default()
+    } else {
+        fcm::fetch_config().expect("Failed to fetch config")
+    };
 
     rocket::custom(config)
         .attach(ServerVersionHeader {
@@ -923,4 +896,71 @@ fn rocket() -> _ {
                 retrieve_server_status,
             ],
         )
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::build_rocket;
+    use rocket::http::Method;
+    use secluso_server_backbone::routes::BASE_ROUTES;
+    use secluso_server_backbone::HttpMethod;
+
+    fn to_rocket_method(method: HttpMethod) -> Method {
+        match method {
+            HttpMethod::Get => Method::Get,
+            HttpMethod::Post => Method::Post,
+            HttpMethod::Delete => Method::Delete,
+            HttpMethod::Put => Method::Put,
+        }
+    }
+
+    #[test]
+    fn base_routes_are_mounted() {
+        std::env::set_var("SECLUSO_SKIP_FCM_CONFIG", "1");
+        std::env::set_var("SECLUSO_SKIP_USER_CREDENTIALS", "1");
+        let rocket = build_rocket();
+        let routes: Vec<_> = rocket.routes().collect();
+
+        for spec in BASE_ROUTES {
+            let expected_method = to_rocket_method(spec.method);
+            let route = routes.iter().find(|route| {
+                route.method == expected_method && route.uri == spec.path
+            });
+            let route = route.unwrap_or_else(|| {
+                panic!("Missing route: {:?} {}", spec.method, spec.path)
+            });
+            let route_uri = route.uri.to_string();
+            let actual_params = extract_params(&route_uri);
+            assert_eq!(
+                actual_params.as_slice(),
+                spec.params,
+                "Param mismatch for {:?} {}",
+                spec.method,
+                spec.path
+            );
+        }
+    }
+
+    fn extract_params(path: &str) -> Vec<&str> {
+        let path = path.split('?').next().unwrap_or(path);
+        let mut params = Vec::new();
+        let mut in_param = false;
+        let mut start = 0;
+
+        for (idx, ch) in path.char_indices() {
+            if ch == '<' {
+                in_param = true;
+                start = idx + 1;
+                continue;
+            }
+            if ch == '>' && in_param {
+                let raw = &path[start..idx];
+                let name = raw.trim_end_matches("..");
+                params.push(name);
+                in_param = false;
+            }
+        }
+
+        params
+    }
 }

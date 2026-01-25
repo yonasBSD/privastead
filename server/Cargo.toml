@@ -18,3 +18,4 @@ subtle = "2.6.1"
 time = "0.3.41"
 plist = "1.8.0"
 anyhow = "1.0.100"
+secluso-server-backbone = { path = "../server_backbone" }

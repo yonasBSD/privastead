@@ -10,6 +10,7 @@ use plist::Value;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use secluso_server_backbone::types::ConfigResponse;
 use std::error::Error;
 use std::{fs, thread, time};
 
@@ -95,19 +96,6 @@ struct Claims {
     aud: String,
     exp: usize,
     iat: usize,
-}
-
-// Configuration values returned to the client
-#[derive(Serialize)]
-pub struct ConfigResponse {
-    api_key_ios: String,
-    api_key_android: String,
-    app_id_ios: String,
-    app_id_android: String,
-    messaging_sender_id: String,
-    project_id: String,
-    storage_bucket: String,
-    bundle_id: String,
 }
 
 fn fetch_token(
