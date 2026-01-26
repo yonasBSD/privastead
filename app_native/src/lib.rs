@@ -422,20 +422,35 @@ fn parse_epoch_from_enc_filename(prefix: &str, name: &str) -> Option<u64> {
     name.strip_prefix(prefix)?.parse::<u64>().ok()
 }
 
-fn write_epoch_marker(file_dir: &str, kind: &str, epoch: u64) -> io::Result<()> {
+fn write_epoch_marker(
+    file_dir: &str,
+    kind: &str,
+    epoch: u64,
+    payload: Option<&str>,
+) -> io::Result<()> {
     let marker_path = format!("{}/videos/.epoch_{}_{}.done", file_dir, kind, epoch);
     if Path::new(&marker_path).exists() {
         return Ok(());
     }
 
-    let mut file = fs::File::create(&marker_path)?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    file.write_all(timestamp.to_string().as_bytes())?;
+    let tmp_path = format!(
+        "{}/videos/.epoch_{}_{}.done.tmp",
+        file_dir, kind, epoch
+    );
+    let mut file = fs::File::create(&tmp_path)?;
+    let content = if let Some(payload) = payload {
+        payload.to_string()
+    } else {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        timestamp.to_string()
+    };
+    file.write_all(content.as_bytes())?;
     file.flush()?;
     file.sync_all()?;
+    fs::rename(tmp_path, marker_path)?;
     Ok(())
 }
 
@@ -443,7 +458,7 @@ fn decrypt_video_attempt(
     clients: &mut Clients,
     enc_pathname: &str,
     assumed_epoch: u64,
-) -> io::Result<String> {
+) -> io::Result<(String, bool)> {
     let file_dir = clients.mls_clients[MOTION].get_file_dir();
     info!("File dir: {}", file_dir);
 
@@ -476,7 +491,7 @@ fn decrypt_video_attempt(
     let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
 
     if Path::new(&dec_pathname).exists() {
-        return Ok("Duplicate".to_string());
+        return Ok((dec_filename, true));
     }
 
     let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
@@ -511,7 +526,7 @@ fn decrypt_video_attempt(
     dec_file.sync_all().unwrap();
     clients.mls_clients[MOTION].save_group_state();
 
-    Ok(dec_filename)
+    Ok((dec_filename, false))
 }
 
 pub fn decrypt_video(
@@ -549,9 +564,9 @@ pub fn decrypt_video(
     }
 
     match decrypt_video_attempt(clients, &enc_pathname, assumed_epoch) {
-        Ok(filename) => {
+        Ok((filename, is_duplicate)) => {
             if let Some(epoch) = epoch {
-                if let Err(e) = write_epoch_marker(&file_dir, "motion", epoch) {
+                if let Err(e) = write_epoch_marker(&file_dir, "motion", epoch, Some(&filename)) {
                     warn!(
                         "Failed to write motion epoch marker (epoch={}, err={})",
                         epoch, e
@@ -564,7 +579,11 @@ pub fn decrypt_video(
                     checkpoint_label, e
                 );
             }
-            Ok(filename)
+            if is_duplicate {
+                Ok("Duplicate".to_string())
+            } else {
+                Ok(filename)
+            }
         }
         Err(e) => {
             warn!(
@@ -580,9 +599,11 @@ pub fn decrypt_video(
 
             let retry = decrypt_video_attempt(clients, &enc_pathname, assumed_epoch);
             match retry {
-                Ok(filename) => {
+                Ok((filename, is_duplicate)) => {
                     if let Some(epoch) = epoch {
-                        if let Err(e) = write_epoch_marker(&file_dir, "motion", epoch) {
+                        if let Err(e) =
+                            write_epoch_marker(&file_dir, "motion", epoch, Some(&filename))
+                        {
                             warn!(
                                 "Failed to write motion epoch marker (epoch={}, err={})",
                                 epoch, e
@@ -601,7 +622,11 @@ pub fn decrypt_video(
                             checkpoint_label, err
                         );
                     }
-                    Ok(filename)
+                    if is_duplicate {
+                        Ok("Duplicate".to_string())
+                    } else {
+                        Ok(filename)
+                    }
                 }
                 Err(err) => Err(err),
             }
@@ -614,7 +639,7 @@ fn decrypt_thumbnail_attempt(
     enc_pathname: &str,
     pending_meta_directory: &str,
     assumed_epoch: u64,
-) -> io::Result<String> {
+) -> io::Result<(String, bool)> {
     let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
     info!("File dir: {}", file_dir);
 
@@ -641,7 +666,7 @@ fn decrypt_thumbnail_attempt(
 
     if Path::new(&dec_pathname).exists() {
         // TODO: Should this be an error?
-        return Ok("Duplicate".to_string());
+        return Ok((dec_filename, true));
     }
 
     // Write a metadata file for the thumbnail, which will be deleted later and stored in the database via the pending processor.
@@ -670,7 +695,7 @@ fn decrypt_thumbnail_attempt(
     dec_file.sync_all().unwrap();
     clients.mls_clients[THUMBNAIL].save_group_state();
 
-    Ok(dec_filename)
+    Ok((dec_filename, false))
 }
 
 pub fn decrypt_thumbnail(
@@ -710,9 +735,11 @@ pub fn decrypt_thumbnail(
         &pending_meta_directory,
         assumed_epoch,
     ) {
-        Ok(filename) => {
+        Ok((filename, is_duplicate)) => {
             if let Some(epoch) = epoch {
-                if let Err(e) = write_epoch_marker(&file_dir, "thumbnail", epoch) {
+                if let Err(e) =
+                    write_epoch_marker(&file_dir, "thumbnail", epoch, Some(&filename))
+                {
                     warn!(
                         "Failed to write thumbnail epoch marker (epoch={}, err={})",
                         epoch, e
@@ -725,7 +752,11 @@ pub fn decrypt_thumbnail(
                     checkpoint_label, e
                 );
             }
-            Ok(filename)
+            if is_duplicate {
+                Ok("Duplicate".to_string())
+            } else {
+                Ok(filename)
+            }
         }
         Err(e) => {
             warn!(
@@ -746,9 +777,11 @@ pub fn decrypt_thumbnail(
                 assumed_epoch,
             );
             match retry {
-                Ok(filename) => {
+                Ok((filename, is_duplicate)) => {
                     if let Some(epoch) = epoch {
-                        if let Err(e) = write_epoch_marker(&file_dir, "thumbnail", epoch) {
+                        if let Err(e) =
+                            write_epoch_marker(&file_dir, "thumbnail", epoch, Some(&filename))
+                        {
                             warn!(
                                 "Failed to write thumbnail epoch marker (epoch={}, err={})",
                                 epoch, e
@@ -767,7 +800,11 @@ pub fn decrypt_thumbnail(
                             checkpoint_label, err
                         );
                     }
-                    Ok(filename)
+                    if is_duplicate {
+                        Ok("Duplicate".to_string())
+                    } else {
+                        Ok(filename)
+                    }
                 }
                 Err(err) => Err(err),
             }
