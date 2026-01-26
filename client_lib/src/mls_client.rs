@@ -15,10 +15,17 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize};
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+// Checkpoints are a separate, *short-lived* MLS state snapshot used only during
+// decrypt. They are not part of the normal state rotation and are cleared on
+// success, so we can safely roll back after a crash without weakening the
+// long-term forward secrecy guarantees for other message flows.
+const CHECKPOINT_GROUP_PREFIX: &str = "checkpoint_group_state_";
+const CHECKPOINT_KEY_PREFIX: &str = "checkpoint_key_store_";
 
 pub type KeyPackages = Vec<(Vec<u8>, KeyPackage)>;
 
@@ -98,6 +105,38 @@ pub struct MlsClient {
 }
 
 impl MlsClient {
+    fn sanitize_checkpoint_label(label: &str) -> String {
+        label.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+    }
+
+    fn checkpoint_paths(&self, label: &str) -> (String, String) {
+        let safe_label = Self::sanitize_checkpoint_label(label);
+        let group_path = format!(
+            "{}/{}{}_{}",
+            self.file_dir, CHECKPOINT_GROUP_PREFIX, self.tag, safe_label
+        );
+        let key_path = format!(
+            "{}/{}{}_{}",
+            self.file_dir, CHECKPOINT_KEY_PREFIX, self.tag, safe_label
+        );
+        (group_path, key_path)
+    }
+
+    fn load_group_from_file(
+        path: &str,
+        provider: &OpenMlsRustPersistentCrypto,
+    ) -> io::Result<Option<Group>> {
+        let file = fs::File::open(path)?;
+        let mut reader = BufReader::with_capacity(file.metadata()?.len().try_into().unwrap(), file);
+        let data = reader.fill_buf()?;
+        let group_helper_option: Option<GroupHelper> = bincode::deserialize(data)
+            .map_err(|e| io::Error::other(format!("Failed to deserialize group state - {e}")))?;
+        match group_helper_option {
+            Some(group_helper) => Ok(Some(Group::from_deserialized(group_helper, provider)?)),
+            None => Ok(None),
+        }
+    }
+
     /// if first_time, create a new user with the given name and a fresh set of credentials.
     /// else, restore existing client.
     /// user_credentials: the user credentials needed to authenticate with the server. Different from OpenMLS credentials.
@@ -480,6 +519,69 @@ impl MlsClient {
         }
     }
 
+    // Create a crash-recovery snapshot of MLS state before decrypting a file.
+    // This is intentionally separate from save_group_state so we do not delete
+    // or overwrite the normal rotation files.
+    pub fn save_checkpoint(&mut self, label: &str) -> io::Result<()> {
+        let (group_path, key_path) = self.checkpoint_paths(label);
+
+        let group_helper_option = self.group.as_ref().map(|group| GroupHelper {
+            group_name: group.group_name.clone(),
+            group_id: group.mls_group.group_id().to_vec(),
+            only_contact: group.only_contact.clone(),
+        });
+
+        let data = bincode::serialize(&group_helper_option)
+            .map_err(|e| io::Error::other(format!("Failed to serialize group state - {e}")))?;
+
+        let mut file = fs::File::create(&group_path)?;
+        file.write_all(&data)?;
+        file.flush()?;
+        file.sync_all()?;
+
+        let mut ks_file = fs::File::create(&key_path)?;
+        self.provider
+            .save_keystore(&ks_file)
+            .map_err(|e| io::Error::other(e))?;
+        ks_file.flush()?;
+        ks_file.sync_all()?;
+
+        Ok(())
+    }
+
+    // Our best-effort recovery path... if both checkpoint files exist, reload the
+    // keystore first (so group load can succeed), then restore the group helper.
+    // Returns false when there is no checkpoint to restore.
+    pub fn restore_checkpoint(&mut self, label: &str) -> io::Result<bool> {
+        let (group_path, key_path) = self.checkpoint_paths(label);
+        if !Path::new(&group_path).exists() || !Path::new(&key_path).exists() {
+            return Ok(false);
+        }
+
+        let ks_file = fs::File::open(&key_path)?;
+        self.provider
+            .load_keystore(&ks_file)
+            .map_err(|e| io::Error::other(e))?;
+
+        let group = Self::load_group_from_file(&group_path, &self.provider)?;
+        self.group = group;
+
+        Ok(true)
+    }
+
+    // Checkpoints are very strictly temporary and absolutely should be removed after a
+    // successful decrypt to avoid any lingering rollback windows.
+    pub fn clear_checkpoint(&mut self, label: &str) -> io::Result<()> {
+        let (group_path, key_path) = self.checkpoint_paths(label);
+        if Path::new(&group_path).exists() {
+            fs::remove_file(&group_path)?;
+        }
+        if Path::new(&key_path).exists() {
+            fs::remove_file(&key_path)?;
+        }
+        Ok(())
+    }
+
     pub fn restore_group_state(
         file_dir: String,
         tag: String,
@@ -490,21 +592,8 @@ impl MlsClient {
                 .unwrap();
         for f in &g_files {
             let pathname = file_dir.clone() + "/" + f;
-            let file = fs::File::open(pathname).expect("Could not open file");
-            let mut reader =
-                BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
-            let data = reader.fill_buf().unwrap();
-            let deserialize_result = bincode::deserialize(data);
-            if let Ok(group_helper_option) = deserialize_result {
-                match group_helper_option {
-                    Some(group_helper) => {
-                        let group = Group::from_deserialized(group_helper, provider)?;
-                        return Ok(Some(group));
-                    }
-                    None => {
-                        return Ok(None);
-                    }
-                }
+            if let Ok(group) = Self::load_group_from_file(&pathname, provider) {
+                return Ok(group);
             }
         }
 

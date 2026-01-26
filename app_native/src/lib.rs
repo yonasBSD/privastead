@@ -4,7 +4,7 @@
 
 use anyhow::anyhow;
 use anyhow::Context;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use rand::Rng;
 use secluso_client_lib::config::{
     Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST,
@@ -418,52 +418,20 @@ fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
-fn should_process_commit(
-    mls_client: &MlsClient,
-    assumed_epoch: u64,
-    client_tag: &str,
-) -> io::Result<bool> {
-    let current_epoch = mls_client.get_epoch()?;
-    if current_epoch == assumed_epoch {
-        Ok(true)
-    } else if current_epoch == assumed_epoch.saturating_add(1) {
-        info!(
-            "Skipping commit processing for {} (current epoch {}, assumed {})",
-            client_tag, current_epoch, assumed_epoch
-        );
-        Ok(false)
-    } else {
-        Err(io::Error::other(format!(
-            "Error: {} epoch mismatch (current {}, assumed {})",
-            client_tag, current_epoch, assumed_epoch
-        )))
-    }
-}
-
-pub fn decrypt_video(
-    clients: &mut Option<Box<Clients>>,
-    encrypted_filename: String,
+fn decrypt_video_attempt(
+    clients: &mut Clients,
+    enc_pathname: &str,
     assumed_epoch: u64,
 ) -> io::Result<String> {
-    if clients.is_none() {
-        return Err(io::Error::other(
-            "Error: clients not initialized!".to_string(),
-        ));
-    }
-
-    let clients = clients.as_mut().unwrap();
     let file_dir = clients.mls_clients[MOTION].get_file_dir();
     info!("File dir: {}", file_dir);
-    let enc_pathname: String = format!("{}/videos/{}", file_dir, encrypted_filename);
 
     let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
-    if should_process_commit(&clients.mls_clients[MOTION], assumed_epoch, "motion")? {
-        clients.mls_clients[MOTION].decrypt(enc_msg, false)?;
-        clients.mls_clients[MOTION].save_group_state();
-    }
+    clients.mls_clients[MOTION].decrypt(enc_msg, false)?;
+    clients.mls_clients[MOTION].save_group_state();
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the video info
@@ -525,10 +493,9 @@ pub fn decrypt_video(
     Ok(dec_filename)
 }
 
-pub fn decrypt_thumbnail(
+pub fn decrypt_video(
     clients: &mut Option<Box<Clients>>,
     encrypted_filename: String,
-    pending_meta_directory: String,
     assumed_epoch: u64,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -538,18 +505,87 @@ pub fn decrypt_thumbnail(
     }
 
     let clients = clients.as_mut().unwrap();
+    let file_dir = clients.mls_clients[MOTION].get_file_dir();
+    let enc_pathname: String = format!("{}/videos/{}", file_dir, &encrypted_filename);
+    let checkpoint_label = format!("motion_{}", &encrypted_filename);
+
+    // Decrypt can advance the MLS ratchet before the output file is safely written.
+    // If the app crashes in that window, retrying the same ciphertext can hit
+    // SecretReuseError. We mitigate this by (1) restoring any existing checkpoint
+    // from a prior crash, (2) saving a fresh checkpoint, and (3) rolling back
+    // once and retrying on any decrypt error. This limits the rollback's scope to this
+    // one file and avoids affecting other MLS channels.
+    {
+        let mls_client = &mut clients.mls_clients[MOTION];
+        if mls_client.restore_checkpoint(&checkpoint_label)? {
+            warn!(
+                "Restored motion MLS checkpoint before decrypt (label={})",
+                checkpoint_label
+            );
+        }
+        mls_client.save_checkpoint(&checkpoint_label)?;
+    }
+
+    match decrypt_video_attempt(clients, &enc_pathname, assumed_epoch) {
+        Ok(filename) => {
+            if let Err(e) = clients.mls_clients[MOTION].clear_checkpoint(&checkpoint_label) {
+                warn!(
+                    "Failed to clear motion MLS checkpoint (label={}, err={})",
+                    checkpoint_label, e
+                );
+            }
+            Ok(filename)
+        }
+        Err(e) => {
+            warn!(
+                "Motion decrypt failed (label={}, err={}); rolling back MLS checkpoint and retrying once",
+                checkpoint_label, e
+            );
+            if clients.mls_clients[MOTION].restore_checkpoint(&checkpoint_label)? {
+                warn!(
+                    "Restored motion MLS checkpoint after decrypt failure (label={})",
+                    checkpoint_label
+                );
+            }
+
+            let retry = decrypt_video_attempt(clients, &enc_pathname, assumed_epoch);
+            match retry {
+                Ok(filename) => {
+                    warn!(
+                        "Motion decrypt succeeded after rollback (label={})",
+                        checkpoint_label
+                    );
+                    if let Err(err) =
+                        clients.mls_clients[MOTION].clear_checkpoint(&checkpoint_label)
+                    {
+                        warn!(
+                            "Failed to clear motion MLS checkpoint (label={}, err={})",
+                            checkpoint_label, err
+                        );
+                    }
+                    Ok(filename)
+                }
+                Err(err) => Err(err),
+            }
+        }
+    }
+}
+
+fn decrypt_thumbnail_attempt(
+    clients: &mut Clients,
+    enc_pathname: &str,
+    pending_meta_directory: &str,
+    assumed_epoch: u64,
+) -> io::Result<String> {
     let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
     info!("File dir: {}", file_dir);
-    let enc_pathname: String = format!("{}/videos/{}", file_dir, encrypted_filename);
 
     let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
-    if should_process_commit(&clients.mls_clients[THUMBNAIL], assumed_epoch, "thumbnail")? {
-        clients.mls_clients[THUMBNAIL].decrypt(enc_msg, false)?;
-        clients.mls_clients[MOTION].save_group_state();
-    }
+    clients.mls_clients[THUMBNAIL].decrypt(enc_msg, false)?;
+    clients.mls_clients[THUMBNAIL].save_group_state();
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the timestamp
@@ -575,6 +611,7 @@ pub fn decrypt_thumbnail(
         "{}/meta_{}.txt",
         pending_meta_directory, thumbnail_meta_info.timestamp
     );
+
     let meta_file = File::create(&dec_meta_file_path)?;
     let mut meta_file_writer = BufWriter::new(meta_file);
 
@@ -596,6 +633,91 @@ pub fn decrypt_thumbnail(
     clients.mls_clients[THUMBNAIL].save_group_state();
 
     Ok(dec_filename)
+}
+
+pub fn decrypt_thumbnail(
+    clients: &mut Option<Box<Clients>>,
+    encrypted_filename: String,
+    pending_meta_directory: String,
+    assumed_epoch: u64,
+) -> io::Result<String> {
+    if clients.is_none() {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    }
+
+    let clients = clients.as_mut().unwrap();
+    let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
+    let enc_pathname: String = format!("{}/videos/{}", file_dir, &encrypted_filename);
+    let checkpoint_label = format!("thumbnail_{}", &encrypted_filename);
+
+    // Same checkpoint logic as motion: save the previous MLS state so we can roll
+    // back on failure and retry once. This avoids breaking normal MLS epoch rules.
+    {
+        let mls_client = &mut clients.mls_clients[THUMBNAIL];
+        if mls_client.restore_checkpoint(&checkpoint_label)? {
+            warn!(
+                "Restored thumbnail MLS checkpoint before decrypt (label={})",
+                checkpoint_label
+            );
+        }
+        mls_client.save_checkpoint(&checkpoint_label)?;
+    }
+
+    match decrypt_thumbnail_attempt(
+        clients,
+        &enc_pathname,
+        &pending_meta_directory,
+        assumed_epoch,
+    ) {
+        Ok(filename) => {
+            if let Err(e) = clients.mls_clients[THUMBNAIL].clear_checkpoint(&checkpoint_label) {
+                warn!(
+                    "Failed to clear thumbnail MLS checkpoint (label={}, err={})",
+                    checkpoint_label, e
+                );
+            }
+            Ok(filename)
+        }
+        Err(e) => {
+            warn!(
+                "Thumbnail decrypt failed (label={}, err={}); rolling back MLS checkpoint and retrying once",
+                checkpoint_label, e
+            );
+            if clients.mls_clients[THUMBNAIL].restore_checkpoint(&checkpoint_label)? {
+                warn!(
+                    "Restored thumbnail MLS checkpoint after decrypt failure (label={})",
+                    checkpoint_label
+                );
+            }
+
+            let retry = decrypt_thumbnail_attempt(
+                clients,
+                &enc_pathname,
+                &pending_meta_directory,
+                assumed_epoch,
+            );
+            match retry {
+                Ok(filename) => {
+                    warn!(
+                        "Thumbnail decrypt succeeded after rollback (label={})",
+                        checkpoint_label
+                    );
+                    if let Err(err) =
+                        clients.mls_clients[THUMBNAIL].clear_checkpoint(&checkpoint_label)
+                    {
+                        warn!(
+                            "Failed to clear thumbnail MLS checkpoint (label={}, err={})",
+                            checkpoint_label, err
+                        );
+                    }
+                    Ok(filename)
+                }
+                Err(err) => Err(err),
+            }
+        }
+    }
 }
 
 pub fn decrypt_message(
