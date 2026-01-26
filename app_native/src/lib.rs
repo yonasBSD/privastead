@@ -418,6 +418,27 @@ fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
+fn parse_epoch_from_enc_filename(prefix: &str, name: &str) -> Option<u64> {
+    name.strip_prefix(prefix)?.parse::<u64>().ok()
+}
+
+fn write_epoch_marker(file_dir: &str, kind: &str, epoch: u64) -> io::Result<()> {
+    let marker_path = format!("{}/videos/.epoch_{}_{}.done", file_dir, kind, epoch);
+    if Path::new(&marker_path).exists() {
+        return Ok(());
+    }
+
+    let mut file = fs::File::create(&marker_path)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    file.write_all(timestamp.to_string().as_bytes())?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn decrypt_video_attempt(
     clients: &mut Clients,
     enc_pathname: &str,
@@ -508,6 +529,7 @@ pub fn decrypt_video(
     let file_dir = clients.mls_clients[MOTION].get_file_dir();
     let enc_pathname: String = format!("{}/videos/{}", file_dir, &encrypted_filename);
     let checkpoint_label = format!("motion_{}", &encrypted_filename);
+    let epoch = parse_epoch_from_enc_filename("encVideo", &encrypted_filename);
 
     // Decrypt can advance the MLS ratchet before the output file is safely written.
     // If the app crashes in that window, retrying the same ciphertext can hit
@@ -528,6 +550,14 @@ pub fn decrypt_video(
 
     match decrypt_video_attempt(clients, &enc_pathname, assumed_epoch) {
         Ok(filename) => {
+            if let Some(epoch) = epoch {
+                if let Err(e) = write_epoch_marker(&file_dir, "motion", epoch) {
+                    warn!(
+                        "Failed to write motion epoch marker (epoch={}, err={})",
+                        epoch, e
+                    );
+                }
+            }
             if let Err(e) = clients.mls_clients[MOTION].clear_checkpoint(&checkpoint_label) {
                 warn!(
                     "Failed to clear motion MLS checkpoint (label={}, err={})",
@@ -551,6 +581,14 @@ pub fn decrypt_video(
             let retry = decrypt_video_attempt(clients, &enc_pathname, assumed_epoch);
             match retry {
                 Ok(filename) => {
+                    if let Some(epoch) = epoch {
+                        if let Err(e) = write_epoch_marker(&file_dir, "motion", epoch) {
+                            warn!(
+                                "Failed to write motion epoch marker (epoch={}, err={})",
+                                epoch, e
+                            );
+                        }
+                    }
                     warn!(
                         "Motion decrypt succeeded after rollback (label={})",
                         checkpoint_label
@@ -651,6 +689,7 @@ pub fn decrypt_thumbnail(
     let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
     let enc_pathname: String = format!("{}/videos/{}", file_dir, &encrypted_filename);
     let checkpoint_label = format!("thumbnail_{}", &encrypted_filename);
+    let epoch = parse_epoch_from_enc_filename("encThumbnail", &encrypted_filename);
 
     // Same checkpoint logic as motion: save the previous MLS state so we can roll
     // back on failure and retry once. This avoids breaking normal MLS epoch rules.
@@ -672,6 +711,14 @@ pub fn decrypt_thumbnail(
         assumed_epoch,
     ) {
         Ok(filename) => {
+            if let Some(epoch) = epoch {
+                if let Err(e) = write_epoch_marker(&file_dir, "thumbnail", epoch) {
+                    warn!(
+                        "Failed to write thumbnail epoch marker (epoch={}, err={})",
+                        epoch, e
+                    );
+                }
+            }
             if let Err(e) = clients.mls_clients[THUMBNAIL].clear_checkpoint(&checkpoint_label) {
                 warn!(
                     "Failed to clear thumbnail MLS checkpoint (label={}, err={})",
@@ -700,6 +747,14 @@ pub fn decrypt_thumbnail(
             );
             match retry {
                 Ok(filename) => {
+                    if let Some(epoch) = epoch {
+                        if let Err(e) = write_epoch_marker(&file_dir, "thumbnail", epoch) {
+                            warn!(
+                                "Failed to write thumbnail epoch marker (epoch={}, err={})",
+                                epoch, e
+                            );
+                        }
+                    }
                     warn!(
                         "Thumbnail decrypt succeeded after rollback (label={})",
                         checkpoint_label
