@@ -29,7 +29,7 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::str;
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -459,6 +459,7 @@ fn decrypt_video_attempt(
     enc_pathname: &str,
     assumed_epoch: u64,
 ) -> io::Result<(String, bool)> {
+    let total_start = Instant::now();
     let file_dir = clients.mls_clients[MOTION].get_file_dir();
     info!("File dir: {}", file_dir);
 
@@ -466,12 +467,16 @@ fn decrypt_video_attempt(
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
+    let commit_start = Instant::now();
     clients.mls_clients[MOTION].decrypt(enc_msg, false)?;
     clients.mls_clients[MOTION].save_group_state();
+    let commit_ms = commit_start.elapsed().as_millis();
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the video info
+    let info_start = Instant::now();
     let dec_msg = clients.mls_clients[MOTION].decrypt(enc_msg, true)?;
+    let info_ms = info_start.elapsed().as_millis();
 
     let info: VideoNetInfo = bincode::deserialize(&dec_msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -491,11 +496,18 @@ fn decrypt_video_attempt(
     let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
 
     if Path::new(&dec_pathname).exists() {
+        debug!(
+            "decrypt_video timings (duplicate): commit={}ms info={}ms total={}ms",
+            commit_ms,
+            info_ms,
+            total_start.elapsed().as_millis()
+        );
         return Ok((dec_filename, true));
     }
 
     let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
 
+    let chunk_start = Instant::now();
     for expected_chunk_number in 0..info.num_msg {
         let enc_msg = read_next_msg_from_file(&mut enc_file)?;
         let dec_msg = clients.mls_clients[MOTION].decrypt(enc_msg, true)?;
@@ -519,12 +531,25 @@ fn decrypt_video_attempt(
 
         let _ = dec_file.write_all(&dec_msg[8..]);
     }
+    let chunk_ms = chunk_start.elapsed().as_millis();
 
     // Here, we first make sure the dec_file is flushed.
     // Then, we save groups state, which persists the update.
+    let flush_start = Instant::now();
     dec_file.flush().unwrap();
     dec_file.sync_all().unwrap();
     clients.mls_clients[MOTION].save_group_state();
+    let flush_ms = flush_start.elapsed().as_millis();
+
+    debug!(
+        "decrypt_video timings: commit={}ms info={}ms chunks={}ms flush={}ms total={}ms (chunks={})",
+        commit_ms,
+        info_ms,
+        chunk_ms,
+        flush_ms,
+        total_start.elapsed().as_millis(),
+        info.num_msg
+    );
 
     Ok((dec_filename, false))
 }
@@ -640,6 +665,7 @@ fn decrypt_thumbnail_attempt(
     pending_meta_directory: &str,
     assumed_epoch: u64,
 ) -> io::Result<(String, bool)> {
+    let total_start = Instant::now();
     let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
     info!("File dir: {}", file_dir);
 
@@ -647,12 +673,16 @@ fn decrypt_thumbnail_attempt(
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
+    let commit_start = Instant::now();
     clients.mls_clients[THUMBNAIL].decrypt(enc_msg, false)?;
     clients.mls_clients[THUMBNAIL].save_group_state();
+    let commit_ms = commit_start.elapsed().as_millis();
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the timestamp
+    let meta_start = Instant::now();
     let dec_msg = clients.mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
+    let meta_ms = meta_start.elapsed().as_millis();
 
     let thumbnail_meta_info: ThumbnailMetaInfo = bincode::deserialize(&dec_msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -666,6 +696,12 @@ fn decrypt_thumbnail_attempt(
 
     if Path::new(&dec_pathname).exists() {
         // TODO: Should this be an error?
+        debug!(
+            "decrypt_thumbnail timings (duplicate): commit={}ms meta={}ms total={}ms",
+            commit_ms,
+            meta_ms,
+            total_start.elapsed().as_millis()
+        );
         return Ok((dec_filename, true));
     }
 
@@ -685,15 +721,29 @@ fn decrypt_thumbnail_attempt(
     let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
+    let payload_start = Instant::now();
     let dec_msg = clients.mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
+    let payload_ms = payload_start.elapsed().as_millis();
 
     let _ = dec_file.write_all(&dec_msg);
 
     // Here, we first make sure the dec_file is flushed.
     // Then, we save groups state, which persists the update.
+    let flush_start = Instant::now();
     dec_file.flush().unwrap();
     dec_file.sync_all().unwrap();
     clients.mls_clients[THUMBNAIL].save_group_state();
+    let flush_ms = flush_start.elapsed().as_millis();
+
+    debug!(
+        "decrypt_thumbnail timings: commit={}ms meta={}ms payload={}ms flush={}ms total={}ms (bytes={})",
+        commit_ms,
+        meta_ms,
+        payload_ms,
+        flush_ms,
+        total_start.elapsed().as_millis(),
+        dec_msg.len()
+    );
 
     Ok((dec_filename, false))
 }
