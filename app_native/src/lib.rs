@@ -457,7 +457,7 @@ fn write_epoch_marker(
 fn decrypt_video_attempt(
     clients: &mut Clients,
     enc_pathname: &str,
-    assumed_epoch: u64,
+    _assumed_epoch: u64,
 ) -> io::Result<(String, bool)> {
     let total_start = Instant::now();
     let file_dir = clients.mls_clients[MOTION].get_file_dir();
@@ -567,7 +567,7 @@ pub fn decrypt_video(
 
     let clients = clients.as_mut().unwrap();
     let file_dir = clients.mls_clients[MOTION].get_file_dir();
-    let enc_pathname: String = format!("{}/videos/{}", file_dir, &encrypted_filename);
+    let enc_pathname: String = format!("{}/encrypted/{}", file_dir, &encrypted_filename);
     let checkpoint_label = format!("motion_{}", &encrypted_filename);
     let epoch = parse_epoch_from_enc_filename("encVideo", &encrypted_filename);
 
@@ -663,7 +663,7 @@ fn decrypt_thumbnail_attempt(
     clients: &mut Clients,
     enc_pathname: &str,
     pending_meta_directory: &str,
-    assumed_epoch: u64,
+    _assumed_epoch: u64,
 ) -> io::Result<(String, bool)> {
     let total_start = Instant::now();
     let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
@@ -762,7 +762,8 @@ pub fn decrypt_thumbnail(
 
     let clients = clients.as_mut().unwrap();
     let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
-    let enc_pathname: String = format!("{}/videos/{}", file_dir, &encrypted_filename);
+    let enc_pathname: String = format!("{}/encrypted/{}", file_dir, &encrypted_filename);
+    info!("Encrypted pathname: {}", enc_pathname);
     let checkpoint_label = format!("thumbnail_{}", &encrypted_filename);
     let epoch = parse_epoch_from_enc_filename("encThumbnail", &encrypted_filename);
 
