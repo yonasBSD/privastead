@@ -465,6 +465,17 @@ pub fn send_notification(device_token: String, msg: Vec<u8>) -> Result<(), Box<d
             },
             "android": {
                 "priority": "high"
+            },
+            "apns": {
+                "headers": {
+                    "apns-push-type": "background",
+                    "apns-priority": "5"
+                },
+                "payload": {
+                    "aps": {
+                        "content-available": 1
+                    }
+                }
             }
         }
     });
