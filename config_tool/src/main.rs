@@ -6,21 +6,17 @@
 extern crate serde_derive;
 
 use docopt::Docopt;
-use image::Luma;
-use openmls_rust_crypto::OpenMlsRustCrypto;
-use openmls_traits::random::OpenMlsRand;
-use openmls_traits::OpenMlsProvider;
 use qrcode::QrCode;
+use image::Luma;
 use std::fs;
 use std::io;
 use std::io::Write;
+use std::fs::create_dir;
 use url::Url;
 use secluso_client_server_lib::auth::create_user_credentials;
+use anyhow::Context;
+use anyhow::anyhow;
 
-// FIXME: these constants should match the ones in rest of the code.
-// Consolidate the constants in one place.
-
-pub const NUM_SECRET_BYTES: usize = 72;
 
 const USAGE: &str = "
 Helps configure the Secluso server, camera, and app.
@@ -58,9 +54,19 @@ fn main() -> io::Result<()> {
         .unwrap_or_else(|e| e.exit());
 
     if args.flag_generate_user_credentials {
-        generate_user_credentials(args.flag_dir, args.flag_server_addr);
+        if let Err(e) = generate_user_credentials(args.flag_dir, args.flag_server_addr) {
+            println!("Failed to generate!");
+            println!("Error: {}", e);
+        } else {
+            println!("Successfully generated!");
+        }
     } else if args.flag_generate_camera_secret {
-        generate_camera_secret(args.flag_dir);
+        if let Err(e) = secluso_client_lib::pairing::generate_raspberry_camera_secret(args.flag_dir) {
+            println!("Failed to generate!");
+            println!("Error: {}", e);
+        } else {
+            println!("Successfully generated!");
+        }
     } else {
         println!("Unsupported command!");
     }
@@ -68,15 +74,13 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn generate_user_credentials(dir: String, mut server_addr: String) {
+fn generate_user_credentials(dir: String, mut server_addr: String) -> anyhow::Result<()> {
     if let Ok(parsed_url) = Url::parse(&server_addr) {
         if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
-            println!("Invalid server URL scheme: {}", parsed_url.scheme());
-            return;
+            return Err(anyhow!("Invalid server URL scheme: {}", parsed_url.scheme()));
         }
     } else {
-        println!("Invalid server URL");
-        return;
+       return Err(anyhow!("Invalid server URL"));
     }
 
     if server_addr.ends_with('/') {
@@ -86,44 +90,26 @@ fn generate_user_credentials(dir: String, mut server_addr: String) {
     let (credentials, credentials_full) =
         create_user_credentials(server_addr);
 
+     // Create the directory if it doesn't exist
+    create_dir(dir.clone()).context("Failed to create directory (it may already exist)")?;
+
     // Save the credentials in a file to be given to the server (delivery service)
     let mut file =
-        fs::File::create(dir.clone() + "/user_credentials").expect("Could not create file");
-    let _ = file.write_all(&credentials);
+        fs::File::create(dir.clone() + "/user_credentials").context("Could not create file")?;
+    file.write_all(&credentials).context("Failed to write to file")?;
 
     // Save the credentials_full (which includes the server addr) as QR code to be shown to the app
-    let code = QrCode::new(&credentials_full).unwrap();
+    let code = QrCode::new(&credentials_full).context("Failed to generate QR code")?;
     let image = code.render::<Luma<u8>>().build();
     image
         .save(dir.clone() + "/user_credentials_qrcode.png")
-        .unwrap();
+        .context("Failed to save image")?;
 
     // Save the credentials_full in a file to be used for testing with the example app
-   // let mut file =
-   //     fs::File::create(dir.clone() + "/user_credentials_for_testing").expect("Could not create file");
-   // let _ = file.write_all(&credentials_full);
+    // let mut file =
+    //     fs::File::create(dir.clone() + "/user_credentials_for_testing").expect("Could not create file");
+    // let _ = file.write_all(&credentials_full);
 
-    println!("Generated!")
+    Ok(())
 }
 
-fn generate_camera_secret(dir: String) {
-    let crypto = OpenMlsRustCrypto::default();
-    let secret = crypto
-        .crypto()
-        .random_vec(NUM_SECRET_BYTES)
-        .unwrap();
-
-    // Save in a file to be given to the camera
-    let mut file =
-        fs::File::create(dir.clone() + "/camera_secret").expect("Could not create file");
-    let _ = file.write_all(&secret);
-
-    // Save as QR code to be shown to the app
-    let code = QrCode::new(secret.clone()).unwrap();
-    let image = code.render::<Luma<u8>>().build();
-    image
-        .save(dir.clone() + "/camera_secret_qrcode.png")
-        .unwrap();
-
-    println!("Generated!")
-}

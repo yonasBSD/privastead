@@ -4,8 +4,27 @@
 
 use crate::mls_client::KeyPackages;
 use serde::{Deserialize, Serialize};
+use qrcode::QrCode;
+use image::Luma;
+use std::fs::create_dir;
+use std::io::Write;
+use anyhow::Context;
+
+use openmls_rust_crypto::OpenMlsRustCrypto;
+use openmls_traits::random::OpenMlsRand;
+use openmls_traits::OpenMlsProvider;
 
 pub const NUM_SECRET_BYTES: usize = 72;
+pub const CAMERA_SECRET_VERSION: &str = "v1";
+
+// We version the QR code, store secret bytes as well as the Wi-Fi passphrase for Raspberry Pi cameras.
+// Versioned QR codes can be helpful to ensure compatibility.
+// Allows us to create backwards compatibility for previous QR versions without needing to re-generate QR codes again for users.
+#[derive(Serialize, Deserialize)]
+pub struct CameraSecret {
+    pub version: String,
+    pub secret: Vec<u8>,
+}
 
 #[derive(Serialize, Deserialize, PartialEq)]
 enum PairingMsgType {
@@ -27,6 +46,65 @@ struct PairingMsg {
 pub struct App {
     key_packages: KeyPackages,
 }
+
+
+pub fn generate_ip_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u8>> {
+    let crypto = OpenMlsRustCrypto::default();
+    let secret = crypto
+        .crypto()
+        .random_vec(NUM_SECRET_BYTES)
+        .context("Failed to generate camera secret bytes")?;
+
+    let camera_secret = CameraSecret {
+        version: CAMERA_SECRET_VERSION.to_string(),
+        secret: secret.clone(),
+    };
+
+    let writeable_secret = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
+
+    // Save as QR code to be shown to the app
+    let code = QrCode::new(writeable_secret.as_bytes()).context("Failed to generate QR code from camera secret bytes")?;
+    let image = code.render::<Luma<u8>>().build();
+    image
+        .save(format!(
+            "camera_{}_secret_qrcode.png",
+            camera_name.replace(" ", "_").to_lowercase()
+        )).context("Failed to save QR code image")?;
+
+    Ok(secret)
+}
+
+pub fn generate_raspberry_camera_secret(dir: String) -> anyhow::Result<()> {
+    let crypto = OpenMlsRustCrypto::default();
+    let secret = crypto
+        .crypto()
+        .random_vec(NUM_SECRET_BYTES).context("Failed to generate camera secret bytes")?;
+
+    let camera_secret = CameraSecret {
+        version: CAMERA_SECRET_VERSION.to_string(),
+        secret: secret.clone(),
+    };
+
+    let writeable_secret = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
+
+    // Create the directory if it doesn't exist
+    create_dir(dir.clone()).context("Failed to create directory (it may already exist)")?;
+
+    // Save in a file to be given to the camera
+    // The camera secret does not need to be versioned. We're not worried about the formatting ever changing.
+    let mut file =
+        std::fs::File::create(dir.clone() + "/camera_secret").context("Could not create file")?;
+    file.write_all(&secret).context("Failed to write camera secret data to file")?;
+
+    // Save as QR code to be shown to the app
+    let code = QrCode::new(writeable_secret.clone()).context("Failed to generate QR code from camera secret bytes")?;
+    let image = code.render::<Luma<u8>>().build();
+    image
+        .save(dir.clone() + "/camera_secret_qrcode.png").context("Failed to save QR code image")?;
+
+    Ok(())
+}
+
 
 impl App {
     pub fn new(key_packages: KeyPackages) -> Self {
@@ -78,6 +156,7 @@ impl Camera {
 
         let app_msg_content: PairingMsgContent =
             bincode::deserialize(&app_msg.content_vec).unwrap();
+
         // Check the message type
         if app_msg_content.msg_type != PairingMsgType::AppToCameraMsg {
             panic!("Received invalid pairing message!");

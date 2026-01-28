@@ -5,16 +5,12 @@
 use crate::initialize_mls_clients;
 use crate::traits::Camera;
 use cfg_if::cfg_if;
-use image::Luma;
-use openmls_rust_crypto::OpenMlsRustCrypto;
-use openmls_traits::random::OpenMlsRand;
-use openmls_traits::OpenMlsProvider;
-use qrcode::QrCode;
 use rand::Rng;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::{KeyPackages, MlsClient};
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
 use secluso_client_lib::pairing;
+ use secluso_client_lib::pairing::generate_ip_camera_secret;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 use serde_json::Value;
 use std::fs::File;
@@ -115,26 +111,6 @@ fn perform_pairing_handshake(
     write_varying_len(stream, &camera_msg)?;
 
     Ok(app_key_packages)
-}
-
-fn generate_camera_secret(camera: &dyn Camera) -> Vec<u8> {
-    let crypto = OpenMlsRustCrypto::default();
-    let secret = crypto
-        .crypto()
-        .random_vec(pairing::NUM_SECRET_BYTES)
-        .unwrap();
-
-    // Save as QR code to be shown to the app
-    let code = QrCode::new(secret.clone()).unwrap();
-    let image = code.render::<Luma<u8>>().build();
-    image
-        .save(format!(
-            "camera_{}_secret_qrcode.png",
-            camera.get_name().replace(" ", "_").to_lowercase()
-        ))
-        .unwrap();
-
-    secret
 }
 
 pub fn get_input_camera_secret() -> Vec<u8> {
@@ -360,14 +336,15 @@ pub fn pair_all(
     mls_clients: &mut MlsClients,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
     let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
 
     let secret = if let Some(s) = input_camera_secret.clone() {
         s
     } else {
-        generate_camera_secret(camera)
+       // This has to be an IP camera. If the camera_secret does not exist for Raspberry Pi, it will not proceed earlier on in the flow.
+        generate_ip_camera_secret(&camera.get_name())?
     };
 
     if input_camera_secret.is_none() {

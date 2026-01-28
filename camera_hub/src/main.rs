@@ -107,6 +107,7 @@ struct Args {
     flag_reset: bool,
     flag_reset_full: bool,
     flag_test_motion: bool,
+     #[cfg(feature = "raspberry")]
     flag_save_all: bool,
     #[cfg(feature = "ip")]
     flag_test_livestream: bool,
@@ -331,7 +332,7 @@ fn core(
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
     test_mode: bool,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     let state_dir = camera.get_state_dir();
     let first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
 

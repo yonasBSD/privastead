@@ -685,7 +685,7 @@ fn build_series_from_telemetry(path: &Path, tail: Option<usize>) -> Result<Serie
     let mut ticks: VecDeque<SeriesTick> = VecDeque::new();
     let max = tail.unwrap_or(usize::MAX);
 
-    let mut push_tail = |list: &mut VecDeque<SeriesHealth>, item: SeriesHealth| {
+    let push_tail = |list: &mut VecDeque<SeriesHealth>, item: SeriesHealth| {
         if max == 0 {
             return;
         }
@@ -695,7 +695,7 @@ fn build_series_from_telemetry(path: &Path, tail: Option<usize>) -> Result<Serie
         list.push_back(item);
     };
 
-    let mut push_tail_tick = |list: &mut VecDeque<SeriesTick>, item: SeriesTick| {
+    let push_tail_tick = |list: &mut VecDeque<SeriesTick>, item: SeriesTick| {
         if max == 0 {
             return;
         }
