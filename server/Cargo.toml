@@ -15,7 +15,7 @@ chrono = "0.4"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 dashmap = "6.1.0"
 subtle = "2.6.1"
-time = "0.3.41"
+time = "0.3.47"
 plist = "1.8.0"
 anyhow = "1.0.100"
 secluso-server-backbone = { path = "../server_backbone" }
