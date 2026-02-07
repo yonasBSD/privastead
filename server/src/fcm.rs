@@ -8,14 +8,55 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use plist::Value;
 use reqwest::blocking::Client;
+use reqwest::Url;
+use secluso_server_backbone::types::ConfigResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use secluso_server_backbone::types::ConfigResponse;
 use std::error::Error;
 use std::{fs, thread, time};
 
 // Fixed bundle id used to locate the Firebase app
 const BUNDLE_ID: &str = "com.secluso.mobile";
+const FIREBASE_API_HOST: &str = "firebase.googleapis.com";
+const FCM_API_HOST: &str = "fcm.googleapis.com";
+const OAUTH_TOKEN_ALLOWED_HOSTS: &[&str] = &[
+    "oauth2.googleapis.com",
+    "www.googleapis.com",
+    "accounts.google.com",
+];
+
+// In this file we send very sensitive stuff over HTTP requests: a JWT assertion signed with the
+// Firebase service-account private key, bearer access tokens, and push payloads tied to user
+// devices. If any endpoint URL is quietly changed to plain http:// or to a lookalike host,
+// that sensitive data can be leaked even if the rest of the code looks normal. Static analyzers
+// (and real attackers) care about this because string-built URLs can be influenced by config files,
+// environment drift, bad defaults, or future refactors.
+//
+// So we do two explicit checks every time:
+// 1) scheme must be HTTPS (transport encryption is non-negotiable);
+// 2) host must be in a small allowlist for the API we expect.
+fn validate_https_url(
+    raw_url: &str,
+    allowed_hosts: &[&str],
+    label: &str,
+) -> Result<Url> {
+    let parsed = Url::parse(raw_url).with_context(|| format!("Invalid {label} URL: {raw_url}"))?;
+    if parsed.scheme() != "https" {
+        anyhow::bail!("Refusing non-HTTPS {label} URL: {raw_url}");
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("URL missing host for {label}: {raw_url}"))?;
+    if !allowed_hosts
+        .iter()
+        .any(|allowed| host.eq_ignore_ascii_case(allowed))
+    {
+        anyhow::bail!("Refusing unexpected host '{host}' for {label}");
+    }
+
+    Ok(parsed)
+}
 
 // Platform specific helpers for Firebase apps
 enum Platform {
@@ -103,6 +144,12 @@ fn fetch_token(
     client: &Client,
     scope: String,
 ) -> Result<String, Box<dyn Error>> {
+    let token_uri = validate_https_url(
+        &service_account_key.token_uri,
+        OAUTH_TOKEN_ALLOWED_HOSTS,
+        "OAuth token endpoint",
+    )?;
+
     // Build an access token for Firebase API requests
     // Create the JWT claims
     let iat = Utc::now();
@@ -110,7 +157,7 @@ fn fetch_token(
     let claims = Claims {
         iss: service_account_key.client_email.clone(),
         scope: scope,
-        aud: service_account_key.token_uri.clone(),
+        aud: token_uri.as_str().to_string(),
         exp: exp.timestamp() as usize,
         iat: iat.timestamp() as usize,
     };
@@ -123,7 +170,7 @@ fn fetch_token(
 
     // Obtain the OAuth 2.0 token
     let token_response: serde_json::Value = client
-        .post(&service_account_key.token_uri)
+        .post(token_uri)
         .form(&[
             ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
             ("assertion", &jwt),
@@ -150,6 +197,11 @@ fn fetch_app_identifier(
         service_account_key.project_id,
         arch.apps_path()
     );
+    let request_android_app_list_url = validate_https_url(
+        &request_android_app_list_url,
+        &[FIREBASE_API_HOST],
+        "Firebase app list endpoint",
+    )?;
 
     // Send the request for the app list
     let apps: ListApps = client
@@ -184,6 +236,11 @@ fn fetch_operation_status(
     name: String,
 ) -> Result<Option<String>> {
     let request_operation_url = format!("https://firebase.googleapis.com/v1beta1/{}", name);
+    let request_operation_url = validate_https_url(
+        &request_operation_url,
+        &[FIREBASE_API_HOST],
+        "Firebase operation endpoint",
+    )?;
 
     // Check long running operation status
     let op: Operation = client
@@ -222,6 +279,11 @@ fn create_app(
         service_account_key.project_id,
         arch.apps_path()
     );
+    let request_android_app_list_url = validate_https_url(
+        &request_android_app_list_url,
+        &[FIREBASE_API_HOST],
+        "Firebase app creation endpoint",
+    )?;
 
     // Build the app creation payload
 
@@ -276,6 +338,11 @@ fn send_config_request(
         arch.apps_path(),
         app_id
     );
+    let request_operation_url = validate_https_url(
+        &request_operation_url,
+        &[FIREBASE_API_HOST],
+        "Firebase config endpoint",
+    )?;
 
     // Send the request for the config file
     let response = client
@@ -301,7 +368,7 @@ fn send_config_request(
 
 pub fn fetch_config() -> Result<ConfigResponse, Box<dyn Error>> {
     // Orchestrate app discovery creation and config retrieval
-    let client = Client::new();
+    let client = Client::builder().https_only(true).build()?;
 
     // Read the service account key file
     let service_account_key: ServiceAccountKey = serde_json::from_str(
@@ -437,7 +504,7 @@ pub fn fetch_config() -> Result<ConfigResponse, Box<dyn Error>> {
 }
 
 pub fn send_notification(device_token: String, msg: Vec<u8>) -> Result<(), Box<dyn Error>> {
-    let client = Client::new();
+    let client = Client::builder().https_only(true).build()?;
 
     // Read the service account key file
     let service_account_key: ServiceAccountKey =
@@ -454,6 +521,7 @@ pub fn send_notification(device_token: String, msg: Vec<u8>) -> Result<(), Box<d
         "https://fcm.googleapis.com/v1/projects/{}/messages:send",
         service_account_key.project_id
     );
+    let fcm_url = validate_https_url(&fcm_url, &[FCM_API_HOST], "FCM endpoint")?;
 
     // Create the FCM message payload
     let message = json!({

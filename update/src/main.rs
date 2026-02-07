@@ -6,9 +6,9 @@ use docopt::Docopt;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use semver::Version;
-use sha2::{Digest, Sha256};
-use serde_json;
 use serde::Deserialize;
+use serde_json;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read};
@@ -19,14 +19,14 @@ use std::thread::sleep;
 use std::time::Duration;
 use zip::ZipArchive;
 
-use sequoia_openpgp as openpgp;
 use openpgp::cert::Cert;
-use openpgp::parse::Parse;
 use openpgp::parse::stream::{
     DetachedVerifierBuilder, GoodChecksum, MessageLayer, MessageStructure, VerificationHelper,
 };
+use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::{Fingerprint, KeyHandle};
+use sequoia_openpgp as openpgp;
 
 // Binaries stored in INSTALL_ROOT/bin/BINARY_NAME
 const INSTALL_ROOT: &str = "/opt/secluso";
@@ -156,7 +156,6 @@ enum Component {
     ConfigTool,
 }
 
-
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -212,7 +211,10 @@ impl Component {
                 Ok("aarch64-unknown-linux-gnu/secluso-raspberry-camera-hub")
             }
             (Self::RaspberryCameraHub, _) => {
-                bail!("component=raspberry_camera_hub not supported on arch={}", arch)
+                bail!(
+                    "component=raspberry_camera_hub not supported on arch={}",
+                    arch
+                )
             }
 
             (Self::ConfigTool, "x86_64") => Ok("x86_64-unknown-linux-gnu/secluso-config-tool"),
@@ -300,7 +302,11 @@ fn check_update(args: &Args) -> Result<()> {
         .ok()
         .and_then(|v| {
             let trimmed = v.trim().to_string();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
         });
 
     let mut headers = HeaderMap::new();
@@ -349,9 +355,7 @@ fn check_update(args: &Args) -> Result<()> {
 
     let zip_bytes: Bytes = if let Some(path) = bundle_path {
         println!("Using local bundle: {}", path);
-        Bytes::from(
-            fs::read(path).with_context(|| format!("Failed reading bundle at {}", path))?,
-        )
+        Bytes::from(fs::read(path).with_context(|| format!("Failed reading bundle at {}", path))?)
     } else {
         // Select bundle asset (zip)
         let bundle = release
@@ -414,12 +418,6 @@ fn check_update(args: &Args) -> Result<()> {
             Some(v) => v.clone(),
             None => {
                 let v = fetch_github_user_keyring(&client, &signer.github_user)?;
-                println!(
-                    "Loaded {} cert(s) for github_user={} ({} key fps)",
-                    v.0.len(),
-                    signer.github_user,
-                    v.1.len()
-                );
                 key_cache.insert(signer.github_user.clone(), v.clone());
                 v
             }
@@ -433,12 +431,12 @@ fn check_update(args: &Args) -> Result<()> {
             &signer.github_user,
             &signer.label,
         )
-            .with_context(|| {
-                format!(
-                    "Signature verification failed (label={}, github_user={})",
-                    signer.label, signer.github_user
-                )
-            })?;
+        .with_context(|| {
+            format!(
+                "Signature verification failed (label={}, github_user={})",
+                signer.label, signer.github_user
+            )
+        })?;
     }
 
     println!("All required OpenPGP signatures verified for manifest.json.");
@@ -522,13 +520,19 @@ fn check_update(args: &Args) -> Result<()> {
 
     write_current_version(component, latest_version.clone())?;
 
-    println!("Updated to version {latest_version} (component={})", args.flag_component);
+    println!(
+        "Updated to version {latest_version} (component={})",
+        args.flag_component
+    );
     Ok(())
 }
 
 fn require_release_is_immutable(release: &GhRelease) -> Result<()> {
     if release.draft {
-        bail!("Refusing update: latest release {} is a draft.", release.tag_name);
+        bail!(
+            "Refusing update: latest release {} is a draft.",
+            release.tag_name
+        );
     }
     if release.published_at.is_none() {
         bail!(
@@ -553,7 +557,11 @@ fn require_asset_sha256_digest_matches_download(
     let expected = normalize_hex(asset_digest);
 
     // We only accept GitHub's sha256 digests here.
-    if !asset_digest.trim().to_ascii_lowercase().starts_with("sha256:") {
+    if !asset_digest
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("sha256:")
+    {
         bail!(
             "Refusing update: asset {} has unsupported digest format {}",
             asset_name,
@@ -575,9 +583,11 @@ fn require_asset_sha256_digest_matches_download(
     Ok(())
 }
 
-
 fn fetch_latest_release(client: &Client, owner_repo: &str) -> Result<GhRelease> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", owner_repo);
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        owner_repo
+    );
     let resp = client.get(&url).send()?.error_for_status()?;
     Ok(resp.json::<GhRelease>()?)
 }
@@ -625,8 +635,7 @@ fn read_zip_file(zip: &mut ZipArchive<Cursor<Bytes>>, path: &str) -> Result<Vec<
         Err(_) => {}
     }
 
-    let prefix = zip_root_prefix(zip)
-        .ok_or_else(|| anyhow!("zip missing entry {}", path))?;
+    let prefix = zip_root_prefix(zip).ok_or_else(|| anyhow!("zip missing entry {}", path))?;
     let alt = format!("{}{}", prefix, path);
     let mut f = zip
         .by_name(&alt)
@@ -639,8 +648,8 @@ fn read_zip_file(zip: &mut ZipArchive<Cursor<Bytes>>, path: &str) -> Result<Vec<
 // Fetch the current version from the component within INSTALL_ROOT
 fn get_current_version(component: Component) -> Result<Version> {
     let p = component.version_file();
-    let s = fs::read_to_string(&p)
-        .with_context(|| format!("reading current version file: {}", p))?;
+    let s =
+        fs::read_to_string(&p).with_context(|| format!("reading current version file: {}", p))?;
 
     Ok(Version::parse(s.trim().trim_start_matches('v'))?)
 }
