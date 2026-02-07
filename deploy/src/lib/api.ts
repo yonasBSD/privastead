@@ -53,6 +53,7 @@ export interface ImageBuildRequest {
   variant?: "official" | "diy";
   qrOutputPath: string;
   imageOutputPath: string;
+  sshEnabled?: boolean;
   wifi?: { country: string; ssid: string; psk: string };
   binariesRepo?: string;
   sigKeys?: { name: string; githubUser: string }[];

@@ -8,6 +8,7 @@
     wifiSsid: string;
     wifiPsk: string;
     wifiCountry: string;
+    sshEnabled: boolean;
     binariesSource: "main" | "custom";
     binariesRepo: string;
     key1Name: string;
@@ -24,6 +25,7 @@
     wifiSsid: "",
     wifiPsk: "",
     wifiCountry: "",
+    sshEnabled: true,
     binariesSource: "main",
     binariesRepo: "",
     key1Name: "",
@@ -79,6 +81,15 @@
           <span>Force Docker help panel</span>
         </label>
         <p class="help">Shows the Docker install panel even when Docker is installed.</p>
+      </div>
+
+      <div class="section block">
+        <div class="block-title">Image Builder <span class="badge">Optional</span></div>
+        <label class="toggle">
+          <input type="checkbox" bind:checked={devSettings.sshEnabled} />
+          <span>Enable SSH in generated image</span>
+        </label>
+        <p class="help">Only applies when developer mode is on.</p>
       </div>
 
       <div class="section block">

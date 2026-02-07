@@ -60,6 +60,22 @@ fn normalize_repo(input: &str) -> String {
   trimmed.trim_end_matches(".git").to_string()
 }
 
+fn normalize_ssh_suffix(output_name: &str, ssh_enabled: bool) -> String {
+  if !output_name.ends_with(".img") {
+    return output_name.to_string();
+  }
+  if ssh_enabled {
+    if output_name.ends_with("-ssh-enabled.img") {
+      return output_name.to_string();
+    }
+    return format!("{}-ssh-enabled.img", &output_name[..output_name.len() - 4]);
+  }
+  if let Some(base) = output_name.strip_suffix("-ssh-enabled.img") {
+    return format!("{base}.img");
+  }
+  output_name.to_string()
+}
+
 pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) -> Result<BuildImageResponse> {
   // input validation happens here so the ui can show a clear first failure
   step_start(app, run_id, "validate", "Validating inputs");
@@ -95,6 +111,8 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
     .file_name()
     .and_then(|s| s.to_str())
     .ok_or_else(|| anyhow!("Invalid output image path: {}", req.image_output_path))?;
+  let ssh_enabled = req.ssh_enabled.unwrap_or(false);
+  let output_name = normalize_ssh_suffix(output_name, ssh_enabled);
   let out_dir = output_path
     .parent()
     .filter(|p| !p.as_os_str().is_empty())
@@ -111,13 +129,13 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
   // base config mirrors the test harness defaults
   let cfg = Config {
     base_image: DEFAULT_BASE_IMAGE.to_string(),
-    output_name: output_name.to_string(),
+    output_name,
     hostname: hostname.to_string(),
     user: User {
       name: DEFAULT_USER_NAME.to_string(),
       password: DEFAULT_USER_PASSWORD.to_string(),
     },
-    ssh: Ssh { enable: false, authorized_keys: vec![] },
+    ssh: Ssh { enable: ssh_enabled, authorized_keys: vec![] },
     wifi: req.wifi.clone(),
     apt: Apt { packages: DEFAULT_PACKAGES.iter().map(|p| (*p).to_string()).collect() },
     secluso: Some(Secluso {

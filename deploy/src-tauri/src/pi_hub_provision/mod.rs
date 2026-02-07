@@ -29,6 +29,7 @@ pub struct BuildImageRequest {
   variant: Option<String>,
   qr_output_path: String,
   image_output_path: String,
+  ssh_enabled: Option<bool>,
   wifi: Option<Wifi>,
   binaries_repo: Option<String>,
   sig_keys: Option<Vec<SigKey>>,

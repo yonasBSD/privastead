@@ -18,7 +18,7 @@
       bullets: [
         "LED and button hardware supported.",
         "Night-vision IR auto-toggle service.",
-        "SSH disabled; auto-updater enabled.",
+        "Auto-updater enabled.",
         "Production config & indicators."
       ]
     },
@@ -28,7 +28,7 @@
       subtitle: "Simple Pi setup",
       bullets: [
         "No button, LED, or integrated night-vision controller.",
-        "SSH disabled; auto-updater enabled.",
+        "Auto-updater enabled.",
       ]
     }
   ];
@@ -38,6 +38,7 @@
     wifiSsid: string;
     wifiPsk: string;
     wifiCountry: string;
+    sshEnabled: boolean;
     binariesSource: "main" | "custom";
     binariesRepo: string;
     key1Name: string;
@@ -60,6 +61,7 @@
     wifiSsid: "",
     wifiPsk: "",
     wifiCountry: "",
+    sshEnabled: true,
     binariesSource: "main",
     binariesRepo: "",
     key1Name: "",
@@ -80,6 +82,37 @@
   $: dockerMissing = missingRequirements.some((req) => req.name === "Docker");
   $: buildxMissing = missingRequirements.some((req) => req.name === "Docker Buildx");
   $: showDockerHelp = dockerMissing || buildxMissing || (devSettings.enabled && devSettings.showDockerHelp);
+  $: sshStatusText = !devSettings.enabled
+    ? "SSH disabled."
+    : devSettings.sshEnabled
+    ? "SSH enabled (developer options)."
+    : "SSH disabled (developer options).";
+  $: imageOutputPlaceholder = effectiveSshEnabled()
+    ? "Choose file (e.g., secluso-rpi-ssh-enabled.img)"
+    : "Choose file (e.g., secluso-rpi.img)";
+
+  function effectiveSshEnabled(): boolean {
+    return devSettings.enabled && devSettings.sshEnabled;
+  }
+
+  function normalizeSshSuffix(path: string, sshEnabled: boolean): string {
+    if (!path.endsWith(".img")) return path;
+    if (sshEnabled) {
+      if (path.endsWith("-ssh-enabled.img")) return path;
+      return `${path.slice(0, -4)}-ssh-enabled.img`;
+    }
+    if (path.endsWith("-ssh-enabled.img")) {
+      return `${path.slice(0, -"-ssh-enabled.img".length)}.img`;
+    }
+    return path;
+  }
+
+  $: if (imageOutputPath) {
+    const normalized = normalizeSshSuffix(imageOutputPath, effectiveSshEnabled());
+    if (normalized !== imageOutputPath) {
+      imageOutputPath = normalized;
+    }
+  }
 
   async function pickQrOutput() {
     const path = await save({
@@ -100,9 +133,10 @@
       String(now.getHours()).padStart(2, "0"),
       String(now.getMinutes()).padStart(2, "0")
     ].join("");
+    const defaultPath = normalizeSshSuffix(`secluso-rpi-${stamp}.img`, effectiveSshEnabled());
     const path = await save({
       title: "Save Raspberry Pi image as…",
-      defaultPath: `secluso-rpi-${stamp}.img`,
+      defaultPath,
       filters: [ { name: "Disk image", extensions: ["img"] } ]
     });
     if (typeof path === "string" && path.length) imageOutputPath = path;
@@ -148,6 +182,12 @@
     building = true;
 
     try {
+      const sshEnabled = effectiveSshEnabled();
+      const outputWithSuffix = normalizeSshSuffix(imageOutputPath, sshEnabled);
+      if (outputWithSuffix !== imageOutputPath) {
+        imageOutputPath = outputWithSuffix;
+      }
+
       const devWifiEnabled =
         devSettings.enabled &&
         devSettings.wifiSsid.trim() &&
@@ -157,7 +197,8 @@
       const { run_id } = await buildImage({
         variant: productVariant,
         qrOutputPath,
-        imageOutputPath,
+        imageOutputPath: outputWithSuffix,
+        sshEnabled,
         binariesRepo: devSettings.binariesSource === "custom" ? devSettings.binariesRepo.trim() : undefined,
         githubToken: devSettings.enabled && devSettings.githubToken.trim() ? devSettings.githubToken.trim() : undefined,
         sigKeys:
@@ -197,13 +238,15 @@
           wifiSsid: "",
           wifiPsk: "",
           wifiCountry: "",
+          sshEnabled: true,
           binariesSource: "main",
           binariesRepo: "",
           key1Name: "",
           key1User: "",
           key2Name: "",
           key2User: "",
-          githubToken: ""
+          githubToken: "",
+          showDockerHelp: false
         };
     }
   });
@@ -357,6 +400,7 @@
             {#each v.bullets as b}
               <li>{b}</li>
             {/each}
+            <li>{sshStatusText}</li>
           </ul>
         </label>
       {/each}
@@ -382,7 +426,7 @@
     <div class="row">
       <label class="field grow">
         <span>Save to</span>
-        <input readonly placeholder="Choose file (e.g., secluso-rpi.img)" bind:value={imageOutputPath} />
+        <input readonly placeholder={imageOutputPlaceholder} bind:value={imageOutputPath} />
       </label>
       <button class="ghost" on:click={pickImageOutput}>Choose File</button>
     </div>
