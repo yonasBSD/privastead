@@ -19,7 +19,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize};
 
-const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+// Post-quantum secure ciphersuite: https://blog.openmls.tech/posts/2024-04-11-pq-openmls/
+const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519;
+
 // Checkpoints are a separate, *short-lived* MLS state snapshot used only during
 // decrypt. They are not part of the normal state rotation and are cleared on
 // success, so we can safely roll back after a crash without weakening the
