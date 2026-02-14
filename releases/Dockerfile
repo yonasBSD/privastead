@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build arguments
 ARG CRATE_NAME=""
 ARG FEATURES=""

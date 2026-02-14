@@ -1,12 +1,29 @@
-# Secluso — Deterministic, Reproducible Builds
+# Secluso Reproducibility Guide
 
-Secluso ships software for many different device classes (Raspberry Pi, IP cameras, x86 servers, ..).  
-This repo includes a **deterministic build pipeline** with a **reproducibility checker** so anyone can verify that released artifacts correspond to source.
+This folder is the release pipeline. It does three things: builds files, writes a manifest with hashes and build details, and compares two runs to check if they match.
 
-Note: You must have an ARM64 machine in order to build it yourself with this system. 
+If you just want to check a release, you can ignore most internals and do two quick steps: rebuild, then compare your run directory with the official one.
+
+## Fast path: verify one release
+
+Run a build for the same target and profile as the release you are checking:
+
+    ./build.sh --target ipcamera --profile all
+
+Then compare your run output against the official artifact directory:
+
+    ./build.sh --compare ./builds/TIMESTAMP official-binaries
+
+Use the run directory that directly contains manifest.json. Do not point compare at an inner artifacts folder.
+
+When everything matches, the script prints:
+
+    Reproducibility check PASSED
+
+If it does not match, you get explicit mismatch lines such as version mismatch, lock digest mismatch, toolchain digest mismatch, or binary hash mismatch.
 
 <details>
-<summary><strong>Don't have an ARM64 machine? Click here.</strong></summary>
+<summary><strong>Don't have an ARM64 machine for Raspberry Pi builds? Click here.</strong></summary>
 Unfortunately, not everyone has an ARM64 machine. We wanted to provide a guide for people who don't, so that you're able to verify our builds as well.
 
 There are a couple of ARM64 VPS providers. Most of them require that you do identity verification. One that doesn't, that I've personally tested, is https://servers.guru/arm-vps/. You can get a 2-core 4GB ARM VPS for $7/mo. Note that we are not affiliated with servers.guru whatsoever, and that is not an affiliate link. We like that they provide anonymous payment options and seem to try to respect your privacy. Any ARM64 VPS will work. Another option that's more popular is https://www.hetzner.com/cloud (Ampere option), but they'll likely require you to upload identity verification documents (such as your passport).
@@ -27,185 +44,149 @@ The following steps assume you are using version v0.1.0. If we have a release af
 4. Run the build.sh script: `./build.sh` with your preferred arguments, which are detailed in the description below.
 5. Fetch our latest release's binary/manifest ZIP file via wget, `wget https://github.com/secluso/secluso/releases/download/v0.1.0/secluso-v0.1.0.zip`  
 6. Unzip the zip file: `unzip secluso-v0.1.0.zip -d official-binaries` (unzips into folder official-binaries)
-7. Run the compare check: `./build.sh --compare builds/<TIMESTAMP> official-binaries` (replace <TIMESTAMP> with the folder in the builds/ directory that contains the binaries you built)
+7. Run the compare check: `./build.sh --compare builds/<TIMESTAMP> official-binaries` (replace <TIMESTAMP> with the run folder that contains `manifest.json` and `artifacts/`)
 
 If you see `REPRODUCIBILITY CHECK PASSED`, then you're all set! We do not recommend casually building with this in case your server is compromised, we only recommend using it as a verification against our released binaries.
 </details>
 
----
+## What is pinned, and where
 
-## Why Reproducible Builds?
+Toolchain image digests are pinned in digests.lock.env in this directory. Current values include:
 
-- **Trust & security**  
-  Reproducible builds allow you (or anyone else) to independently verify that the binaries we distribute are *exactly* what you’d get if you built from the source code in this repository.  
-  - Without reproducibility, you’d have to take our word that the binaries match the source. In privacy-sensitive software like Secluso, that’s a big leap of faith: hidden code or malicious alterations could be introduced between source and release without easy detection.  
-  - With reproducibility, you don’t need to trust our build environment, our release process, or even us as maintainers. You can rebuild on your own machine, compare the results, and **cryptographically confirm** the binaries are bit-for-bit identical.  
-  - This is especially critical for privacy-related devices (like cameras). Verifying reproducibility ensures that the binaries you’re running to protect your home or workplace are free from backdoors, hidden telemetry, or any other logic not visible in the public source.
+    RUST_DIGEST__AARCH64_UNKNOWN_LINUX_GNU=4c632e493dfa97f0fe014c3910d1690c149bba85ed8678d47d3563ec6f258ead
+    RUST_DIGEST__X86_64_UNKNOWN_LINUX_GNU=3f6e6f8d8725a65a2db964bb828850f888d430c68784d661f753144e5d787207
+    RUST_DIGEST__X86_64_APPLE_DARWIN=3f6e6f8d8725a65a2db964bb828850f888d430c68784d661f753144e5d787207
+    RUST_DIGEST__AARCH64_APPLE_DARWIN=4c632e493dfa97f0fe014c3910d1690c149bba85ed8678d47d3563ec6f258ead
 
-- **Supply-chain integrity**  
-  Our builds are locked to specific versions of compilers, toolchains, and container images. By pinning these to immutable content digests (`sha256:...`), we eliminate the uncertainty of “version drift.”  
-  - Normally, even small compiler updates or dependency changes can alter outputs subtly, making verification impossible.  
-  - By fixing every input, we ensure that what you (and we) build today is the same as what will be built tomorrow, and the same as what was built last year.  
-  - This makes supply-chain attacks (e.g. inserting malicious code into an upstream dependency) much easier to detect.
+Rust binary builds run through Docker Buildx with a BuildKit builder pinned to moby/buildkit:v0.23.0. The builder is created for the run and removed when the script exits.
 
-- **Debuggability & forensics**  
-  Being able to reconstruct the exact build environment means bugs can be reproduced exactly as they occurred in the field.  
-  - If a customer reports an issue, we can rebuild the exact same binary they are running, ensuring we are debugging the *same* artifact.  
-  - This prevents “heisenbugs” caused by mismatches between developer builds and shipped binaries.  
-  - For security audits or incident response, reproducibility means investigators can prove what code was actually running.
+Dependencies are also kept fixed through lockfiles. For Rust crates, each crate lockfile hash is written to the manifest as crate_lock_sha256. In deploy mode, the lock hash is computed from both deploy/src-tauri/Cargo.lock and deploy/pnpm-lock.yaml.
 
-- **Longevity**  
-  Years from now, you can rerun the build pipeline and produce the same outputs.  
-  - This protects against “bit rot”, where environments, compilers, or dependencies disappear or change.  
-  - For compliance, archival, or academic research, reproducibility means the software remains verifiable long after its release.  
-  - Even if the original maintainers are gone, anyone can still prove the integrity of old releases by rebuilding them independently.
+## What build.sh actually does
 
-Read more about why reproducible builds are so important: [reproducible-builds.org](https://reproducible-builds.org)
+The entrypoint is build.sh. It has two modes.
 
----
+Build mode:
 
-## Quick Start (Most Common Use Case)
+    ./build.sh --target TARGET --profile PROFILE
 
-Most users will want to **verify our provided release against their own rebuild**.
+Optional two-run self-check:
 
-1. Download one of our official release builds.
-2. Build the matching target/profile locally, for example:  
-   `./build.sh --target ipcamera --profile all`
-3. Compare your local build against our provided release by passing the build folder that contains `manifest.json`:  
-   `./build.sh --compare ./builds/<timestamp> ./release_build`
+    ./build.sh --target TARGET --profile PROFILE --test-reproduce
 
-If everything matches, you’ll see:  
-`Reproducibility check PASSED`
+Compare mode:
 
-Note that you only need to build what you want checked; it'll just check the files that are present in both builds.
+    ./build.sh --compare RUN_A RUN_B
 
----
+A normal build writes to builds/UNIX_TIMESTAMP. A self-check writes two sibling runs at builds/UNIX_TIMESTAMP/run1 and builds/UNIX_TIMESTAMP/run2, then compares them automatically.
 
-## Notes on Which Folder to Pass
+Each completed run has this shape:
 
-- For a **normal single build**, pass in the timestamped build directory itself, e.g.:  
-  `./builds/1725160000`
+    RUN_DIR/
+      manifest.json
+      artifacts/TARGET_TRIPLE/...
+      distribution/
 
-- For a **reproducibility self-test (`--test-reproduce`)**, two sub-runs are created:  
-  - `./builds/<timestamp>/run1`  
-  - `./builds/<timestamp>/run2`  
-  Each contains its own `manifest.json`.  
-  You should pass one of these run directories to `--compare`.
+The distribution folder includes a verification tarball and a checksum file. You can share that bundle so someone else can run the same compare step.
 
-**Important:** Always pass the directory that directly contains a `manifest.json`, not the per-triple binary folders.
+## Targets and profile map in this script
 
----
+Targets:
+raspberry, ipcamera, server, all, deploy
 
-## Other Useful Commands
+Profiles currently accepted:
 
-- **Rebuild everything for all devices**  
-  `./build.sh --target all --profile all`
-- 
-- **Rebuild everything for our releases**  
-  `./build.sh --target all --profile release`
+raspberry:
+all, core, camerahub, motion_ai_cli
 
-- **Run a reproducibility self-test (two fresh local builds)**  
-  `./build.sh --target raspberry --profile core --test-reproduce`
+ipcamera:
+all, camerahub
 
-- **Build only Raspberry Pi camera hub core set**  
-  `./build.sh --target raspberry --profile core`
+server:
+server
 
-- **Build only Raspberry Pi camera hub**  
-  `./build.sh --target raspberry --profile camerahub`
+all:
+all, release
 
----
+deploy:
+all, linux, macos, windows, linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64, windows-arm64
 
-## Where to Find Results
+Two practical notes from the implementation:
 
-- **Binaries**: `builds/<timestamp>/<target-triple>/`  
-- **Manifest**: `builds/<timestamp>/manifest.json`  
-- **Self-test runs**: `builds/<timestamp>/run1/manifest.json`, `builds/<timestamp>/run2/manifest.json`
+Raspberry-only packages are skipped on non ARM Linux triples.
 
-### Example Layout (building just the camera hubs)
+Deploy can mix host-native bundling and Docker fallback in the same run, depending on what the local Tauri toolchain can package.
 
-- builds/1725160000/
-  - manifest.json
-  - aarch64-unknown-linux-gnu/
-    - secluso-raspberry-camera-hub
-    - secluso-ip-camera-hub
-  - x86_64-unknown-linux-gnu/
-    - secluso-ip-camera-hub
+## Manifest contents and why hash is stored
 
----
+Each artifact entry in manifest.json stores both build info and file hash. Example:
 
-## How It Works (High Level)
+    {
+      "package":"ip_camera_hub",
+      "target":"x86_64-unknown-linux-gnu",
+      "bin":"secluso-ip-camera-hub",
+      "bin_path":"artifacts/x86_64-unknown-linux-gnu/secluso-ip-camera-hub",
+      "sha256":"...",
+      "crate":"camera_hub",
+      "version":"...",
+      "crate_lock_sha256":"...",
+      "rust_digest":"..."
+    }
 
-1. **Pinned Rust toolchains (by content digest)**  
-   We never rely on floating image tags like `rust:latest`, which can change silently over time. Instead:  
-   - Each Rust target triple (e.g. `aarch64-unknown-linux-gnu`) has its own `sha256`-pinned Rust builder image digest recorded in `digests.lock.env`.  
-   - This guarantees that the compiler, linker, and toolchain versions are **exactly** the same across builds, regardless of when or where they’re run.  
-   - By pinning to immutable digests, we remove uncertainty about “version drift” and ensure long-term reproducibility.
+The manifest hash is not trusted on its own. During compare, the script recomputes file hashes from disk and checks them against the manifest first. If a hash in the manifest is fake, compare fails right away with a manifest hash mismatch message.
 
-2. **Ephemeral BuildKit builders (containerized & version-pinned)**  
-   We build using Docker Buildx with a containerized BuildKit backend:  
-   - At the start of a run, the script creates a new BuildKit builder, pinned to `moby/buildkit:v0.23.0`.  
-   - All builds for that run (across all targets and packages) share the same builder.  
-   - When the script exits, the builder is destroyed along with its cache.  
-   - This ensures:  
-     - Builds run in a **clean, isolated environment** for the duration of the pipeline.  
-     - No contamination from host config or previous runs.  
-     - Disk usage stays controlled, since caches don’t accumulate indefinitely across builds.  
+So the stored hash is a record of what the run says it produced, and runtime hashing is what actually checks it.
 
-3. **Machine-readable build manifests**  
-   After a build finishes, we generate a `manifest.json` alongside the binaries. This manifest describes exactly what was built and with what inputs:  
-   - `package`, `target`, `bin`, `bin_path` -> identify which binary belongs to which package and target triple.  
-   - `crate`, `version` -> the source crate name and version (queried with `cargo metadata`).  
-   - `crate_lock_sha256` -> the SHA-256 hash of the crate’s `Cargo.lock`, ensuring dependencies resolved identically.  
-   - `rust_digest` -> the pinned Rust compiler container digest used during the build.  
-   **Important:** We deliberately do **not** store the final binary hashes in the manifest. Instead, they are computed at comparison time to reduce surface area and keep manifests focused on build inputs.
+## How compare decides pass versus fail
 
-4. **Reproducibility checker**  
-   To prove two builds are identical, we use the `compare_runs` function:  
-   - It enforces a **superset rule**: if one build produced fewer artifacts than the other, the smaller set must still exist entirely within the larger set.  
-   - It compares metadata fields (`crate`, `version`, `crate_lock_sha256`, `rust_digest`) to ensure inputs truly match.  
-   - Finally, it computes SHA-256 checksums of the binaries themselves on the fly, confirming that outputs are **bit-for-bit identical**.  
-   - If everything matches, the tool prints:  
-     `Reproducibility check PASSED`  
-   - If not, it highlights mismatches (different versions, differing lockfile hashes, missing artifacts, or binary hash mismatches) so you can pinpoint exactly why a build diverged.
+Compare keys are package, target, and binary name. From there, the script checks that the smaller run is fully contained in the larger one.
 
----
+For each overlapping key, compare checks:
 
-## Terminology: “Target Triples”
+crate name and version
+crate lock digest
+toolchain digest
+manifest hash presence
+manifest hash equals on-disk file hash
+run A file hash equals run B file hash
 
-Rust **target triples** identify the compilation target: `arch-vendor-os-abi`.
+It checks metadata first on purpose, so you can quickly see if the two runs even used the same inputs. If metadata already differs, you are not comparing like-for-like. If metadata matches and the binary hashes still differ, that is the case to treat as a true reproducibility break.
 
-- `aarch64-unknown-linux-gnu`: ARM64, Linux, GNU libc  
-- `x86_64-unknown-linux-gnu`: x86_64, Linux, GNU libc
+## Deploy specifics you will probably hit
 
-Secluso currently uses:
+Deploy mode checks which bundle types the local Tauri CLI supports by parsing pnpm tauri build --help. If the host cannot package a requested non Apple target, Docker fallback is used when available.
 
-| Target | Triples                                   |
-|--------|-------------------------------------------|
-| raspberry | aarch64-unknown-linux-gnu                 |
-| ipcamera | x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu |
-| all    | both of the above                         |
+Apple deploy bundles need host-native support. If the host cannot bundle a requested Apple triple, the run fails with a clear message instead of silently using another path.
 
----
+Docker fallback logs are preserved per triple under artifacts/TARGET_TRIPLE as:
 
-## What Gets Built
+docker-buildx-TARGET_TRIPLE.log
+docker-buildx-TARGET_TRIPLE-summary.log
 
-**Profiles** map to sets of packages (crates) and features:
+Those logs are usually the fastest way to debug packaging failures.
 
-- raspberry
-  - `all`: update, reset, raspberry_camera_hub, config_tool
-  - `core`: raspberry_camera_hub, reset, update
-  - `camerahub`: raspberry_camera_hub
-- ipcamera
-  - `all`: ip_camera_hub, config_tool, server
-  - `camerahub`: ip_camera_hub
-  
-- all
-  - `all`: all of the above for both architectures
-  - `release`: update, raspberry_camera_hub, config_tool, server
+## Common failure messages and what they mean
 
-**Package -> crate/feature mapping** (done in the script):
+Missing manifest(s) for compare:
+One or both compare inputs did not point at a run directory root containing manifest.json.
 
-- `raspberry_camera_hub` → crate camera_hub with `--features raspberry`
-- `ip_camera_hub` → crate camera_hub with `--features ip`
+Larger run does not contain all artifacts of the smaller run:
+The superset rule failed, usually because different target/profile scopes were compared.
 
-Raspberry-only tools (`raspberry_camera_hub`, `reset`) are **skipped** for non-ARM64 triples.
+crate Cargo.lock SHA mismatch:
+Dependency lock state differs between runs.
+
+toolchain digest mismatch:
+Different toolchain identities were used.
+
+manifest sha256 does not match file:
+Run directory mismatch or local file tampering.
+
+binary hash mismatch:
+Inputs matched but outputs diverged.
+
+## Limits of what this proves
+
+If compare passes, you can treat it as strong evidence that the binaries match what should come out of that source revision and those build inputs. It still does not prove the source code itself is safe.
+
+One caveat: if someone can rewrite both artifacts and manifest in one untrusted run directory, that directory alone is not a reliable reference point. The check is strongest when at least one side of compare comes from somewhere independent, like an official release bundle or a separate build machine you control.

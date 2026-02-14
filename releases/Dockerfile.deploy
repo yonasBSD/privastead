@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+ARG RUST_HASH="5861091755a3298619c94a6cbf0534062cfeb9afcda9f698a13df3ef64e2dd8b"
+ARG TAURI_TARGET=""
+ARG TAURI_RUNNER="cargo"
+ARG TAURI_BUNDLE_TARGETS_JSON='["appimage","deb","rpm"]'
+ARG DEBUG="0"
+
+FROM docker.io/rust@sha256:${RUST_HASH} AS builder
+
+ARG TAURI_TARGET
+ARG TAURI_RUNNER
+ARG TAURI_BUNDLE_TARGETS_JSON
+ARG DEBUG
+
+WORKDIR /app
+
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl wget gnupg \
+      nodejs npm \
+      bash \
+      pkg-config \
+      xdg-utils \
+      libssl-dev \
+      libgtk-3-dev \
+      libgtk-3-bin \
+      librsvg2-dev \
+      libglib2.0-bin \
+      libgdk-pixbuf2.0-bin \
+      patchelf file xz-utils zip unzip \
+      squashfs-tools desktop-file-utils \
+      strace procps binutils \
+      rpm nsis clang llvm lld; \
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libayatana-appindicator3-dev \
+      libwebkit2gtk-4.1-dev \
+      libjavascriptcoregtk-4.1-dev \
+      libsoup-3.0-dev; then \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libappindicator3-dev \
+        libwebkit2gtk-4.0-dev \
+        libjavascriptcoregtk-4.0-dev \
+        libsoup2.4-dev; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g pnpm@10.29.1
+
+COPY --from=proj . .
+COPY lib/docker_deploy /opt/secluso-docker-deploy
+RUN chmod +x /opt/secluso-docker-deploy/*.bash
+
+WORKDIR /app/deploy
+
+ENV CI=true
+ENV APPIMAGE_EXTRACT_AND_RUN=1
+ENV APPIMAGE_SILENT_INSTALL=1
+ENV RUST_BACKTRACE=full
+ENV DEBUG=${DEBUG}
+ENV RUST_LOG=tauri_bundler=info,tauri_cli_node=info,ureq=warn
+
+RUN /opt/secluso-docker-deploy/setup_linuxdeploy_plugins.bash
+RUN pnpm install --frozen-lockfile
+RUN rustup target add ${TAURI_TARGET}
+RUN if [ "${TAURI_RUNNER}" = "cargo-xwin" ]; then cargo install --locked cargo-xwin; fi
+RUN /opt/secluso-docker-deploy/run_tauri_build.bash
+
+FROM scratch AS artifact
+ARG TAURI_TARGET
+
+COPY --from=builder /app/deploy/src-tauri/target/${TAURI_TARGET}/release /release
