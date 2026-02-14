@@ -90,7 +90,9 @@ build_and_manifest() {
       art_dir="$(artifact_dir_for_triple "$outdir" "$triple")"
       mkdir -p "$art_dir"
 
-      echo "==> [run $run_id] $pkg for $triple (crate=$crate_name bin=$bin) features=(${features_args[*]})"
+      # Bash 3.2 + set -u treats empty array expansion as unbound unless a
+      # default is provided.
+      echo "==> [run $run_id] $pkg for $triple (crate=$crate_name bin=$bin) features=(${features_args[*]-})"
       docker buildx build \
         --builder "$BUILDER" \
         --no-cache \
@@ -100,7 +102,7 @@ build_and_manifest() {
         --build-arg "BINARY_FILE_NAME=${bin}" \
         --build-arg "CARGO_TARGET=${triple}" \
         --build-arg "RUST_HASH=${digest}" \
-        "${features_args[@]}" \
+        "${features_args[@]+"${features_args[@]}"}" \
         --output "type=local,dest=${art_dir}" \
         "$RELEASES_DIR"
 
