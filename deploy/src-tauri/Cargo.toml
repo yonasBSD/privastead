@@ -28,6 +28,7 @@ tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8"
+secluso-update = { path = "../../update" }
 
 # Keep OpenSSL handling target-specific:
 

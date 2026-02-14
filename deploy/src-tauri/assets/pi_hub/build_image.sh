@@ -5,7 +5,6 @@ set -euo pipefail
 WORK=/work
 OUT=/out
 CFG="$WORK/config.json"
-GITHUB_CURL_ARGS=()
 
 run() { echo "+ $*" >&2; "$@"; }
 jqr() { jq -r "$1" "$CFG"; }
@@ -14,36 +13,6 @@ emit() {
   local level="$1" step="$2" msg="$3"
   msg="${msg//\"/\\\"}"
   printf '::SECLUSO_EVENT::{"level":"%s","step":"%s","msg":"%s"}\n' "$level" "$step" "$msg"
-}
-
-download_github_release_asset() {
-  local owner_repo="$1"   # "secluso/secluso"
-  local mode="$2"         # latest|tag
-  local tag="$3"          # if mode=tag
-  local asset_name="$4"   # exact asset filename in release
-  local out_path="$5"
-
-  local api
-  if [[ "$mode" == "latest" ]]; then
-    api="https://api.github.com/repos/${owner_repo}/releases/latest"
-  else
-    api="https://api.github.com/repos/${owner_repo}/releases/tags/${tag}"
-  fi
-
-  echo "+ Fetching release metadata: $api" >&2
-  local url
-  url="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "$api" | jq -r --arg name "$asset_name" '
-    .assets[]? | select(.name==$name) | .browser_download_url
-  ')"
-
-  if [[ -z "$url" || "$url" == "null" ]]; then
-    echo "Could not find asset '$asset_name' in $owner_repo release ($mode $tag)" >&2
-    echo "Tip: set secluso.asset_name in config.toml to match the release asset exactly." >&2
-    exit 1
-  fi
-
-  echo "+ Downloading asset: $url -> $out_path" >&2
-  curl -fL "${GITHUB_CURL_ARGS[@]}" -o "$out_path" "$url"
 }
 
 BASE_IMAGE="$(jqr '.base_image')"
@@ -61,7 +30,6 @@ if [[ "$HAS_SECLUSO" == "true" ]]; then
   SECLUSO_INSTALL_DIR="$(jqr '.secluso.install_dir // "/opt/secluso"')"
   SECLUSO_ETC_DIR="$(jqr '.secluso.etc_dir // "/etc/secluso"')"
   SECLUSO_REPO="$(jqr '.secluso.repo // "secluso/secluso"')"
-  SECLUSO_GITHUB_TOKEN="$(jqr '.secluso.github_token // empty')"
 fi
 
 PKGS="$(jqr '(.apt.packages // []) | join(" ")')"
@@ -260,7 +228,6 @@ if [[ -n "$PKGS" ]]; then
 fi
 
 if [[ "$HAS_SECLUSO" == "true" ]]; then
-  BUNDLE_ASSET_RE='^secluso-v.*\.zip$'
   ARCHDIR_AARCH64="aarch64-unknown-linux-gnu"
   BUNDLE_ZIP="$WORK/secluso_bundle.zip"
 
@@ -280,50 +247,32 @@ if [[ "$HAS_SECLUSO" == "true" ]]; then
     run install -m 600 "$WORK/camera_secret" "$ROOT/var/lib/secluso/camera_secret"
   fi
 
-  GITHUB_CURL_ARGS=()
-  if [[ -n "${SECLUSO_GITHUB_TOKEN:-}" ]]; then
-    GITHUB_CURL_ARGS=(-H "Authorization: Bearer ${SECLUSO_GITHUB_TOKEN}")
+  [[ -f "$BUNDLE_ZIP" ]] || {
+    emit "error" "secluso" "Missing required bundle at $BUNDLE_ZIP"
+    exit 1
+  }
+
+  emit "info" "secluso" "Installing updater and hub from provided bundle..."
+  rm -rf /tmp/secluso_bundle && mkdir -p /tmp/secluso_bundle
+  unzip -o "$BUNDLE_ZIP" -d /tmp/secluso_bundle >/dev/null
+  root="/tmp/secluso_bundle"
+  maybe="$(find /tmp/secluso_bundle -maxdepth 2 -type f -name manifest.json | head -n 1 || true)"
+  if [[ -n "$maybe" ]]; then
+    root="$(dirname "$maybe")"
+  fi
+  if [[ -x "$root/artifacts/$ARCHDIR_AARCH64/secluso-update" ]]; then
+    run install -m 0755 "$root/artifacts/$ARCHDIR_AARCH64/secluso-update" "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-update"
+    updater_name="secluso-update"
+  else
+    echo "Missing secluso-update in provided bundle" >&2
+    exit 1
   fi
 
-  tag="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "https://api.github.com/repos/${SECLUSO_REPO}/releases/latest" | jq -r '.tag_name // empty')"
-  [[ -n "$tag" && "$tag" != "null" ]] || { echo "Missing tag name for ${SECLUSO_REPO}" >&2; exit 1; }
-
-  if [[ -f "$BUNDLE_ZIP" ]]; then
-    emit "info" "secluso" "Installing updater from provided bundle..."
-    rm -rf /tmp/secluso_bundle && mkdir -p /tmp/secluso_bundle
-    unzip -o "$BUNDLE_ZIP" -d /tmp/secluso_bundle >/dev/null
-    root="/tmp/secluso_bundle"
-    maybe="$(find /tmp/secluso_bundle -maxdepth 2 -type f -name manifest.json | head -n 1 || true)"
-    if [[ -n "$maybe" ]]; then
-      root="$(dirname "$maybe")"
-    fi
-    if [[ -x "$root/$ARCHDIR_AARCH64/secluso-update" ]]; then
-      run install -m 0755 "$root/$ARCHDIR_AARCH64/secluso-update" "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-update"
-      updater_name="secluso-update"
-    else
-      echo "Missing secluso-update in provided bundle" >&2
-      exit 1
-    fi
+  if [[ -x "$root/artifacts/$ARCHDIR_AARCH64/secluso-raspberry-camera-hub" ]]; then
+    run install -m 0755 "$root/artifacts/$ARCHDIR_AARCH64/secluso-raspberry-camera-hub" "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-raspberry-camera-hub"
   else
-    emit "info" "secluso" "Building updater from source..."
-    apt-get update
-    apt-get install -y --no-install-recommends git pkg-config libssl-dev build-essential nettle-dev
-    export RUSTUP_DISABLE_SELF_UPDATE=1
-    curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
-    export PATH="/root/.cargo/bin:$PATH"
-    rustup toolchain install 1.85.0
-
-    rm -rf /tmp/secluso-src
-    git clone --depth 1 --branch "$tag" "https://github.com/${SECLUSO_REPO}.git" /tmp/secluso-src
-    cd /tmp/secluso-src
-    git -c protocol.file.allow=always submodule update --init --depth 1 update
-    cd /tmp/secluso-src/update
-    cargo +1.85.0 build --release -p secluso-update
-
-    updater_bin="target/release/secluso-update"
-    [[ -x "$updater_bin" ]] || { echo "Missing secluso-update binary after build" >&2; exit 1; }
-    updater_name="$(basename "$updater_bin")"
-    run install -m 0755 "$updater_bin" "$ROOT${SECLUSO_INSTALL_DIR}/bin/$updater_name"
+    echo "Missing secluso-raspberry-camera-hub in provided bundle" >&2
+    exit 1
   fi
 
   SIG_ARGS=""
@@ -334,43 +283,14 @@ if [[ "$HAS_SECLUSO" == "true" ]]; then
   fi
 
   run chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && './${updater_name}' --help 2>/dev/null | grep -q -- '--component' || exit 1"
-  if [[ -f "$BUNDLE_ZIP" ]]; then
-    run chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && ${SECLUSO_GITHUB_TOKEN:+GITHUB_TOKEN='${SECLUSO_GITHUB_TOKEN}'} timeout 90s './${updater_name}' --component raspberry_camera_hub --once --bundle-path '${BUNDLE_ZIP}' --interval-secs 60 --github-timeout-secs 20 --github-repo '${SECLUSO_REPO}'${SIG_ARGS} || true"
-  else
-    run chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && ${SECLUSO_GITHUB_TOKEN:+GITHUB_TOKEN='${SECLUSO_GITHUB_TOKEN}'} timeout 90s './${updater_name}' --component raspberry_camera_hub --once --interval-secs 60 --github-timeout-secs 20 --github-repo '${SECLUSO_REPO}'${SIG_ARGS} || true"
-  fi
+  emit "info" "secluso" "Hub binary preinstalled from provided bundle; skipping one-shot updater run."
 
   if [[ ! -x "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-raspberry-camera-hub" ]]; then
-    emit "warn" "secluso" "hub binary missing after updater run"
+    emit "error" "secluso" "hub binary missing after install"
+    exit 1
   fi
 
-  if [[ -f "$BUNDLE_ZIP" ]]; then
-    emit "info" "secluso" "Bundled updater already installed from provided bundle."
-  else
-    emit "info" "secluso" "Installing bundled updater from release..."
-    rel_json="$(curl -fsSL "${GITHUB_CURL_ARGS[@]}" "https://api.github.com/repos/${SECLUSO_REPO}/releases/tags/${tag}")"
-    asset_name="$(echo "$rel_json" | jq -r --arg re "$BUNDLE_ASSET_RE" '
-      .assets | map(select(.name | test($re))) | if length==0 then empty else .[0].name end
-    ')"
-    if [[ -n "$asset_name" && "$asset_name" != "null" ]]; then
-      download_github_release_asset "$SECLUSO_REPO" "tag" "$tag" "$asset_name" "/tmp/secluso_bundle.zip"
-      rm -rf /tmp/secluso_bundle && mkdir -p /tmp/secluso_bundle
-      unzip -o /tmp/secluso_bundle.zip -d /tmp/secluso_bundle >/dev/null
-      root="/tmp/secluso_bundle"
-      maybe="$(find /tmp/secluso_bundle -maxdepth 2 -type f -name manifest.json | head -n 1 || true)"
-      if [[ -n "$maybe" ]]; then
-        root="$(dirname "$maybe")"
-      fi
-      if [[ -x "$root/$ARCHDIR_AARCH64/secluso-update" ]]; then
-        run install -m 0755 "$root/$ARCHDIR_AARCH64/secluso-update" "$ROOT${SECLUSO_INSTALL_DIR}/bin/secluso-update"
-        updater_name="secluso-update"
-      else
-        emit "warn" "secluso" "bundled secluso-update missing for arm64"
-      fi
-    else
-      emit "warn" "secluso" "No release bundle asset found for updater"
-    fi
-  fi
+  emit "info" "secluso" "Bundled updater installed from provided bundle."
 
   # systemd unit
   cat > "$ROOT/etc/systemd/system/secluso_camera_hub.service" <<EOF

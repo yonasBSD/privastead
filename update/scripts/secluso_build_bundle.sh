@@ -138,7 +138,11 @@ else
   echo "WARN: jq not found, skipping manifest sha256 verification"
 fi
 
-ZIP_PATH="$OUT_DIR/secluso-${TAG}.zip"
+# Compute an absolute output path because we run zip from inside BUNDLE_DIR.
+# Using a relative path here would be resolved from BUNDLE_DIR and can point to
+# a non-existent nested location.
+ABS_OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+ZIP_PATH="$ABS_OUT_DIR/secluso-${TAG}.zip"
 rm -f "$ZIP_PATH"
 ( cd "$BUNDLE_DIR" && zip -qr "$ZIP_PATH" . )
 

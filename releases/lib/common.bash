@@ -11,7 +11,6 @@
 # our new Output "contract" is every build run now uses this shape:
 #   <run-dir>/manifest.json
 #   <run-dir>/artifacts/<target-triple>/...
-#   <run-dir>/distribution/*.tar.gz (+ .sha256)
 #
 # helps removes the ambiguity of some files in the run root and some in
 # per-triple directories and makes it obvious what to archive and hand to
@@ -111,67 +110,12 @@ $artifacts_joined
 JSON
 }
 
-create_verification_bundle() {
-  local run_dir="$1"
-  local run_id="$2"
-
-  [[ -f "$run_dir/manifest.json" ]] || die "Missing manifest at $run_dir/manifest.json"
-  [[ -d "$run_dir/artifacts" ]] || die "Missing artifacts directory at $run_dir/artifacts"
-
-  local dist_dir="$run_dir/distribution"
-  mkdir -p "$dist_dir"
-
-  local bundle_stem="secluso-${TARGET}-${PROFILE}-run${run_id}-verify"
-  local bundle_path="$dist_dir/${bundle_stem}.tar.gz"
-  local bundle_sha_path="$dist_dir/${bundle_stem}.sha256"
-  local bundle_root_dir="secluso-verify-binaries"
-  if [[ "${BUILD_KIND:-}" == "deploy" || "${TARGET:-}" == "deploy" ]]; then
-    bundle_root_dir="secluso-verify-applications"
-  fi
-
-  local stage_dir
-  stage_dir="$(mktemp -d)"
-  mkdir -p "$stage_dir/$bundle_root_dir"
-
-  cp "$run_dir/manifest.json" "$stage_dir/$bundle_root_dir/manifest.json"
-  cp -R "$run_dir/artifacts" "$stage_dir/$bundle_root_dir/artifacts"
-
-  cat > "$stage_dir/$bundle_root_dir/README.txt" <<TXT
-This is a self-contained verification bundle
-
-Contents:
-- manifest.json
-- artifacts/<target-triple>/...
-
-Steps to verify against another bundle or build directory:
-1. Extract both bundles.
-2. Run:
-   ${PROGRAM_NAME} --compare <run1-dir> <run2-dir>
-
-Important:
-- Both directories must contain manifest.json. Use that as a guideline for knowing which to choose. Ensure they contain the file at the top-level.
-TXT
-
-  tar -C "$stage_dir" -czf "$bundle_path" "$bundle_root_dir"
-  rm -rf "$stage_dir"
-
-  local bundle_sha
-  bundle_sha="$(sha256_file "$bundle_path")"
-  printf '%s  %s\n' "$bundle_sha" "$(basename "$bundle_path")" > "$bundle_sha_path"
-
-  printf '%s' "$bundle_path"
-}
-
 finalize_run_output() {
   local run_dir="$1"
-  local run_id="$2"
-
-  local bundle_path
-  bundle_path="$(create_verification_bundle "$run_dir" "$run_id")"
+  local _run_id="$2"
 
   echo "Run output"
   echo "- Manifest : $run_dir/manifest.json"
   echo "- Artifacts: $run_dir/artifacts"
-  echo "- Bundle   : $bundle_path"
   echo ""
 }
