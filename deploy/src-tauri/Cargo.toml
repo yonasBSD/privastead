@@ -24,8 +24,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2.6.0"
 anyhow = "1"
-ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8"
+
+# Keep OpenSSL handling target-specific:
+
+# macOS: vendored OpenSSL avoids host/pkg-config discovery issues when building
+# x86_64-apple-darwin on Apple Silicon hosts.
+
+# non-macOS: default ssh2 avoids vendored OpenSSL Windows cross-build failures
+# in our Linux cargo-xwin builders.
+[target.'cfg(target_os = "macos")'.dependencies]
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ssh2 = "0.9"
