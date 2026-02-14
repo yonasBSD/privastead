@@ -15,15 +15,20 @@ use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
 
 pub const NUM_SECRET_BYTES: usize = 72;
-pub const CAMERA_SECRET_VERSION: &str = "v1";
+pub const CAMERA_SECRET_VERSION: &str = "v1.1";
 
-// We version the QR code, store secret bytes as well as the Wi-Fi passphrase for Raspberry Pi cameras.
+// We version the QR code, store secret bytes as well (base64-url-encoded) as the Wi-Fi passphrase for Raspberry Pi cameras.
 // Versioned QR codes can be helpful to ensure compatibility.
 // Allows us to create backwards compatibility for previous QR versions without needing to re-generate QR codes again for users.
 #[derive(Serialize, Deserialize)]
 pub struct CameraSecret {
+    #[serde(rename = "v", alias = "version")]
     pub version: String,
-    pub secret: Vec<u8>,
+
+    // "cameras secret" = "cs", we shorten the fields to reduce the amount of bytes represented in the QrCode.
+    // But this shouldn't be "s" to maintain separation from the user credentials qr code
+    #[serde(rename = "cs", alias = "secret")]
+    pub secret: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -57,7 +62,7 @@ pub fn generate_ip_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u8>> {
 
     let camera_secret = CameraSecret {
         version: CAMERA_SECRET_VERSION.to_string(),
-        secret: secret.clone(),
+        secret: base64_url::encode(&secret),
     };
 
     let writeable_secret = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
@@ -82,7 +87,7 @@ pub fn generate_raspberry_camera_secret(dir: String) -> anyhow::Result<()> {
 
     let camera_secret = CameraSecret {
         version: CAMERA_SECRET_VERSION.to_string(),
-        secret: secret.clone(),
+        secret: base64_url::encode(&secret),
     };
 
     let writeable_secret = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
