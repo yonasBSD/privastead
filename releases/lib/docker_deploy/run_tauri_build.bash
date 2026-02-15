@@ -108,7 +108,9 @@ run_tauri_build() {
     --runner "${TAURI_RUNNER}" \
     --config /tmp/tauri-bundle-config.json \
     --ci \
-    --no-sign
+    --no-sign \
+    -- \
+    --locked
 }
 
 dump_failure_diagnostics() {
@@ -157,7 +159,9 @@ dump_failure_diagnostics() {
       --runner "${TAURI_RUNNER}" \
       --config /tmp/tauri-bundle-config.json \
       --ci \
-      --no-sign 2>/tmp/tauri-build.strace.stderr || true
+      --no-sign \
+      -- \
+      --locked 2>/tmp/tauri-build.strace.stderr || true
     echo "==> tauri strace stderr tail"
     tail -n 120 /tmp/tauri-build.strace.stderr || true
     find /tmp -maxdepth 1 -type f -name 'tauri-build.strace*' | sort > /tmp/tauri-build.strace.files || true

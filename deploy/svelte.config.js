@@ -5,11 +5,19 @@
 import adapter from "@sveltejs/adapter-static";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
+// SvelteKit's default version hash is build-time dependent. Pin it so static
+// asset names are reproducible across identical source/toolchain builds.
+const deterministicVersion =
+  process.env.SOURCE_DATE_EPOCH ?? process.env.npm_package_version ?? "0";
+
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
   preprocess: vitePreprocess(),
   kit: {
     adapter: adapter(),
+    version: {
+      name: deterministicVersion,
+    },
   },
 };
 

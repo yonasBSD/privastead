@@ -13,8 +13,10 @@ semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# OpenPGP verification (pure Rust)
-sequoia-openpgp = { version = "2.1.0", features = ["allow-experimental-crypto"] }
+# OpenPGP verification (pure Rust backend).
+# We explicitly use Sequoia's RustCrypto backend to avoid system nettle/pkg-config
+# dependency chains that break macOS x86_64 cross-builds on Apple Silicon.
+sequoia-openpgp = { version = "=2.1.0", default-features = false, features = ["compression", "crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 
 # zip + hashing
 zip = "2"

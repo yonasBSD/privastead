@@ -4,6 +4,11 @@ target
 .DS_Store
 .idea
 
+
+# Exclude reproducible build work
+.repro-work
+.pnpm-store
+
 # Exclude all credential, video or state based data
 user_credentials
 user_credentials_qrcode.png

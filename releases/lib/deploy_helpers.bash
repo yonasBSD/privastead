@@ -13,7 +13,9 @@ select_deploy_bundles_for_triple() {
 
   case "$triple" in
     *windows*) echo "nsis msi" ;;
-    *apple-darwin) echo "dmg app" ;;
+    # Prefer app bundles for reproducibility checks; dmg container metadata can
+    # vary between runs even when the app payload is identical.
+    *apple-darwin) echo "app dmg" ;;
     *linux*) echo "appimage deb rpm" ;;
     *) echo "all" ;;
   esac
@@ -21,14 +23,20 @@ select_deploy_bundles_for_triple() {
 
 detect_supported_tauri_bundles() {
   local deploy_dir="$1"
+  local help_output
   local values_line
 
-  values_line="$({
-    cd "$deploy_dir" &&
-      pnpm tauri build --help 2>/dev/null |
-      sed -n 's/.*\[possible values: \(.*\)\].*/\1/p' |
-      head -n 1
+  help_output="$({
+    cd "$deploy_dir" || exit 1
+    pnpm tauri build --help 2>&1 || true
   })"
+
+  values_line="$(
+    printf '%s\n' "$help_output" |
+      tr -d '\r' |
+      sed -nE 's/.*\[[Pp]ossible values:[[:space:]]*([^]]+)\].*/\1/p' |
+      head -n 1
+  )"
 
   if [[ -z "$values_line" ]]; then
     echo ""

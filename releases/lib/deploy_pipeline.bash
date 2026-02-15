@@ -58,6 +58,120 @@ write_docker_diagnostic_summary() {
   } > "$summary_log"
 }
 
+require_locked_host_version() {
+  local var_name="$1"
+  local actual_value="$2"
+  local tool_label="$3"
+  local expected_value="${!var_name:-}"
+  local normalized_actual="$actual_value"
+
+  if [[ -z "$normalized_actual" ]]; then
+    normalized_actual="<unavailable>"
+  fi
+
+  [[ -n "$expected_value" ]] || die "Missing ${var_name} in ${DIGESTS_LOCK_FILE}. Deterministic macOS deploy builds require pinned host tool versions."
+  if [[ "$actual_value" != "$expected_value" ]]; then
+    die "Pinned host tool mismatch for ${tool_label}: expected '${expected_value}', got '${normalized_actual}'. Update host toolchain or intentionally rotate ${DIGESTS_LOCK_FILE}."
+  fi
+}
+
+enforce_locked_macos_host_toolchain() {
+  local deploy_dir="$1"
+
+  local rustc_version
+  rustc_version="$(rustc -V 2>/dev/null | awk '{print $2}' || true)"
+  local cargo_version
+  cargo_version="$(cargo -V 2>/dev/null | awk '{print $2}' || true)"
+  local node_version
+  node_version="$(node --version 2>/dev/null | sed 's/^v//' || true)"
+  local pnpm_version
+  pnpm_version="$(pnpm --version 2>/dev/null || true)"
+  local clang_version
+  clang_version="$(clang --version 2>/dev/null | sed -nE 's/^Apple clang version ([0-9.]+).*/\1/p' | head -n 1 || true)"
+  local xcode_version
+  xcode_version="$(xcodebuild -version 2>/dev/null | awk '/^Xcode /{print $2; exit}' || true)"
+  local sdk_version
+  sdk_version="$(xcrun --show-sdk-version 2>/dev/null || true)"
+  local tauri_cli_version
+  tauri_cli_version="$({
+    cd "$deploy_dir" || exit 1
+    node -e 'try{process.stdout.write(require("@tauri-apps/cli/package.json").version || "")}catch(_){process.stdout.write("")}'
+  } 2>/dev/null || true)"
+
+  require_locked_host_version "MACOS_HOST_RUSTC_VERSION" "$rustc_version" "rustc"
+  require_locked_host_version "MACOS_HOST_CARGO_VERSION" "$cargo_version" "cargo"
+  require_locked_host_version "MACOS_HOST_NODE_VERSION" "$node_version" "node"
+  require_locked_host_version "MACOS_HOST_PNPM_VERSION" "$pnpm_version" "pnpm"
+  require_locked_host_version "MACOS_HOST_TAURI_CLI_VERSION" "$tauri_cli_version" "tauri-cli"
+  require_locked_host_version "MACOS_HOST_CLANG_VERSION" "$clang_version" "apple-clang"
+  require_locked_host_version "MACOS_HOST_XCODE_VERSION" "$xcode_version" "xcode"
+  require_locked_host_version "MACOS_HOST_SDK_VERSION" "$sdk_version" "macOS SDK"
+}
+
+record_macos_app_payload_artifacts() {
+  local app_dir="$1"
+  local art_dir="$2"
+  local artifacts_json="$3"
+  local triple="$4"
+  local deploy_version="$5"
+  local deploy_lock_sha="$6"
+  local digest="$7"
+
+  local app_name
+  app_name="$(basename "$app_dir")"
+
+  local exec_dir="$app_dir/Contents/MacOS"
+  [[ -d "$exec_dir" ]] || die "Missing macOS app executable directory: $exec_dir"
+
+  # Capture deterministic app payload files instead of dmg container bytes.
+  local copied_any=0
+  local info_plist="$app_dir/Contents/Info.plist"
+  if [[ -f "$info_plist" ]]; then
+    copied_any=1
+    local info_rel="app/${app_name}/Contents/Info.plist"
+    mkdir -p "$art_dir/app/${app_name}/Contents"
+    cp "$info_plist" "$art_dir/$info_rel"
+    local info_sha
+    info_sha="$(sha256_file "$art_dir/$info_rel")"
+
+    record_deploy_artifact \
+      "$artifacts_json" \
+      "$triple" \
+      "$info_rel" \
+      "$info_sha" \
+      "$deploy_version" \
+      "$deploy_lock_sha" \
+      "$digest"
+  fi
+
+  while IFS= read -r payload_file; do
+    [[ -z "$payload_file" ]] && continue
+    copied_any=1
+
+    local rel_in_app="${payload_file#${app_dir}/}"
+    local rel_path_within_triple="app/${app_name}/${rel_in_app}"
+    local rel_dir
+    rel_dir="$(dirname "$rel_path_within_triple")"
+    mkdir -p "$art_dir/$rel_dir"
+    cp "$payload_file" "$art_dir/$rel_path_within_triple"
+
+    local copied_path="$art_dir/$rel_path_within_triple"
+    local bin_sha
+    bin_sha="$(sha256_file "$copied_path")"
+
+    record_deploy_artifact \
+      "$artifacts_json" \
+      "$triple" \
+      "$rel_path_within_triple" \
+      "$bin_sha" \
+      "$deploy_version" \
+      "$deploy_lock_sha" \
+      "$digest"
+  done < <(find "$exec_dir" -type f | LC_ALL=C sort)
+
+  [[ "$copied_any" -eq 1 ]] || die "No executable payload files found under $exec_dir"
+}
+
 run_host_deploy_bundle_for_triple() {
   local run_id="$1"
   local triple="$2"
@@ -69,14 +183,41 @@ run_host_deploy_bundle_for_triple() {
   local deploy_version="$8"
   local deploy_lock_sha="$9"
   local digest="${10}"
+  local run_target_dir="${11}"
+  local source_date_epoch="${12}"
+  local deterministic_rustflags="${13}"
+  local effective_rustflags="$deterministic_rustflags"
 
-  local bundle_dir="$deploy_tauri_dir/target/$triple/release/bundle"
-  rm -rf "$bundle_dir"
+  if is_apple_triple "$triple"; then
+    local no_uuid_flag="-C link-arg=-Wl,-no_uuid"
+    if [[ "$effective_rustflags" != *"$no_uuid_flag"* ]]; then
+      effective_rustflags="${effective_rustflags:+$effective_rustflags }$no_uuid_flag"
+    fi
+  fi
+
+  # Keep build-output path stable across run1/run2 so build-script-generated
+  # absolute paths do not introduce per-run entropy into the final binary.
+  rm -rf "$run_target_dir"
+  mkdir -p "$run_target_dir"
+
+  local bundle_dir="$run_target_dir/$triple/release/bundle"
 
   echo "==> [run $run_id] deploy_tool for $triple (host bundle=$selected_bundle)"
   (
     cd "$deploy_dir" || exit 1
-    CARGO_INCREMENTAL=0 CI=true pnpm tauri build -v -v --target "$triple" --bundles "$selected_bundle" --ci --no-sign
+    SOURCE_DATE_EPOCH="$source_date_epoch" \
+      TZ=UTC \
+      LC_ALL=C \
+      LANG=C \
+      ZERO_AR_DATE=1 \
+      CARGO_INCREMENTAL=0 \
+      CARGO_BUILD_JOBS=1 \
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+      CARGO_TARGET_DIR="$run_target_dir" \
+      TAURI_TARGET_DIR="$run_target_dir" \
+      RUSTFLAGS="$effective_rustflags" \
+      CI=true \
+      pnpm tauri build -v -v --target "$triple" --bundles "$selected_bundle" --ci --no-sign -- --locked
   )
 
   [[ -d "$bundle_dir" ]] || die "Missing deploy bundle output directory: $bundle_dir"
@@ -114,8 +255,27 @@ run_host_deploy_bundle_for_triple() {
       -name "*.exe" -o \
       -name "*.dmg" -o \
       -name "*.pkg" \
-    \) | sort
+    \) | LC_ALL=C sort
   )
+
+  if [[ "$found_bundle" -eq 0 && "$selected_bundle" == "app" ]]; then
+    local found_app=0
+    while IFS= read -r app_dir; do
+      [[ -z "$app_dir" ]] && continue
+      found_app=1
+      record_macos_app_payload_artifacts \
+        "$app_dir" \
+        "$art_dir" \
+        "$artifacts_json" \
+        "$triple" \
+        "$deploy_version" \
+        "$deploy_lock_sha" \
+        "$digest"
+    done < <(find "$bundle_dir" -type d -name "*.app" | LC_ALL=C sort)
+
+    [[ "$found_app" -eq 1 ]] || die "No macOS .app bundle was produced for $triple under $bundle_dir"
+    found_bundle=1
+  fi
 
   [[ "$found_bundle" -eq 1 ]] || die "No desktop bundle files were produced for $triple under $bundle_dir"
 }
@@ -298,18 +458,64 @@ build_deploy_and_manifest() {
   local deploy_lock_sha
   deploy_lock_sha="$({ cat "$deploy_cargo_lock"; cat "$deploy_node_lock"; } | sha256_stdin)"
 
-  local host_toolchain_sha
-  host_toolchain_sha="$({ rustc -Vv; node --version; pnpm --version; } | sha256_stdin)"
-
-  local supported_bundles
-  supported_bundles="$(detect_supported_tauri_bundles "$deploy_dir")"
-  [[ -n "$supported_bundles" ]] || die "Could not determine supported Tauri bundle types from local CLI. Run: cd ${deploy_dir} && pnpm tauri build --help"
-
   echo "==> [run $run_id] Installing deploy UI deps (pnpm install --frozen-lockfile)"
   (
     cd "$deploy_dir" || exit 1
     CI=true pnpm install --frozen-lockfile
   )
+
+  local requires_apple_host=0
+  local plan_triple
+  for plan_triple in "${TRIPLES[@]}"; do
+    if is_apple_triple "$plan_triple"; then
+      requires_apple_host=1
+      break
+    fi
+  done
+  if [[ "$requires_apple_host" -eq 1 ]]; then
+    enforce_locked_macos_host_toolchain "$deploy_dir"
+  fi
+
+  local supported_bundles
+  supported_bundles="$(detect_supported_tauri_bundles "$deploy_dir")"
+  [[ -n "$supported_bundles" ]] || die "Could not determine supported Tauri bundle types from local CLI after install. Run: cd ${deploy_dir} && pnpm tauri build --help"
+
+  local deploy_source_date_epoch="${SOURCE_DATE_EPOCH:-}"
+  if [[ -z "$deploy_source_date_epoch" ]]; then
+    if command -v git >/dev/null 2>&1 && git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      deploy_source_date_epoch="$(git -C "$PROJECT_ROOT" log -1 --pretty=%ct 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "$deploy_source_date_epoch" ]]; then
+    deploy_source_date_epoch="1704067200"
+  fi
+  [[ "$deploy_source_date_epoch" =~ ^[0-9]+$ ]] || die "Invalid SOURCE_DATE_EPOCH value: $deploy_source_date_epoch"
+
+  local deterministic_rustflags="${RUSTFLAGS:-}"
+  local remap_flag="--remap-path-prefix=${PROJECT_ROOT}=."
+  if [[ "$deterministic_rustflags" != *"$remap_flag"* ]]; then
+    deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$remap_flag"
+  fi
+  local cargo_home_path="${CARGO_HOME:-$HOME/.cargo}"
+  local cargo_remap_flag="--remap-path-prefix=${cargo_home_path}=/cargo-home"
+  if [[ "$deterministic_rustflags" != *"$cargo_remap_flag"* ]]; then
+    deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$cargo_remap_flag"
+  fi
+  local home_remap_flag="--remap-path-prefix=${HOME}=/home/user"
+  if [[ "$deterministic_rustflags" != *"$home_remap_flag"* ]]; then
+    deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$home_remap_flag"
+  fi
+
+  local host_toolchain_sha
+  host_toolchain_sha="$({
+    rustc -Vv
+    cargo -V
+    node --version
+    pnpm --version
+    clang --version
+    xcodebuild -version || true
+    xcrun --show-sdk-version || true
+  } | sha256_stdin)"
 
   if [[ "$BUILD_KIND" == "deploy" && "$DEPLOY_REQUIRES_DOCKER" -eq 1 && ! -f "${RELEASES_DIR}/Dockerfile.deploy" ]]; then
     die "Missing ${RELEASES_DIR}/Dockerfile.deploy required for deploy cross-platform builds."
@@ -326,9 +532,13 @@ build_deploy_and_manifest() {
     mkdir -p "$art_dir"
 
     local digest
-    digest="$(lookup_rust_digest "$triple")"
-    if [[ -z "$digest" ]]; then
+    if is_apple_triple "$triple"; then
       digest="host-toolchain-${host_toolchain_sha}"
+    else
+      digest="$(lookup_rust_digest "$triple")"
+      if [[ -z "$digest" ]]; then
+        digest="host-toolchain-${host_toolchain_sha}"
+      fi
     fi
 
     local bundle_candidates
@@ -336,6 +546,7 @@ build_deploy_and_manifest() {
 
     local selected_bundle=""
     if selected_bundle="$(pick_supported_bundle "$bundle_candidates" "$supported_bundles" 2>/dev/null)"; then
+      local run_target_dir="${RELEASES_DIR}/.repro-work/deploy-target"
       run_host_deploy_bundle_for_triple \
         "$run_id" \
         "$triple" \
@@ -346,7 +557,10 @@ build_deploy_and_manifest() {
         "$artifacts_json" \
         "$deploy_version" \
         "$deploy_lock_sha" \
-        "$digest"
+        "$digest" \
+        "$run_target_dir" \
+        "$deploy_source_date_epoch" \
+        "$deterministic_rustflags"
       continue
     fi
 
