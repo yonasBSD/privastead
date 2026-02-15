@@ -287,6 +287,7 @@ run_docker_deploy_bundle_for_triple() {
   local deploy_lock_sha="$4"
   local art_dir="$5"
   local artifacts_json="$6"
+  local source_date_epoch="$7"
 
   local docker_platform
   docker_platform="$(docker_platform_for_triple "$triple")"
@@ -347,6 +348,7 @@ run_docker_deploy_bundle_for_triple() {
     --build-arg "TAURI_TARGET=${triple}" \
     --build-arg "TAURI_RUNNER=${docker_runner}" \
     --build-arg "TAURI_BUNDLE_TARGETS_JSON=${docker_bundle_targets_json}" \
+    --build-arg "SOURCE_DATE_EPOCH=${source_date_epoch}" \
     --build-arg "DEBUG=${docker_debug}" \
     --output "type=local,dest=${tmp_art_dir}" \
     -f "${RELEASES_DIR}/Dockerfile.deploy" \
@@ -423,6 +425,13 @@ run_docker_deploy_bundle_for_triple() {
         "$deploy_lock_sha" \
         "$effective_digest"
     fi
+  fi
+
+  # Preserve reproducibility diagnostics generated inside the Docker build
+  # stage so run1/run2 can be compared without rerunning containers.
+  if is_windows_triple "$triple" && [[ -d "$tmp_art_dir/release/repro" ]]; then
+    mkdir -p "$art_dir/repro"
+    cp -R "$tmp_art_dir/release/repro/." "$art_dir/repro/"
   fi
 
   rm -rf "$tmp_art_dir"
@@ -578,7 +587,8 @@ build_deploy_and_manifest() {
       "$deploy_version" \
       "$deploy_lock_sha" \
       "$art_dir" \
-      "$artifacts_json"
+      "$artifacts_json" \
+      "$deploy_source_date_epoch"
   done
 
   write_manifest "$outdir" "$run_id" "$artifacts_json"

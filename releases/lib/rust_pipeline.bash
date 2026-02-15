@@ -58,6 +58,10 @@ build_and_manifest() {
           continue
         fi
       fi
+      if [[ "$TARGET" == "all" && "$PROFILE" == "test" && "$pkg" == "update" && "$triple" != "aarch64-unknown-linux-gnu" ]]; then
+        echo "==> [run $run_id] SKIP $pkg for $triple (test profile keeps update on raspberry only)"
+        continue
+      fi
 
       local crate_lock="$PROJECT_ROOT/$crate_name/Cargo.lock"
       local crate_dir="$PROJECT_ROOT/$crate_name"

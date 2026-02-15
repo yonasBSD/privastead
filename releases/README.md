@@ -106,7 +106,7 @@ server:
 server
 
 all:
-all, release
+all, release, test
 
 deploy:
 all, linux, macos, windows, linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64, windows-arm64
@@ -114,6 +114,8 @@ all, linux, macos, windows, linux-x64, linux-arm64, macos-x64, macos-arm64, wind
 Two practical notes from the implementation:
 
 Raspberry-only packages are skipped on non ARM Linux triples.
+
+The all/test profile builds Raspberry core binaries (camera hub, config tool, update) on ARM64 and adds x86_64 config tool only.
 
 Deploy can mix host-native bundling and Docker fallback in the same run, depending on what the local Tauri toolchain can package.
 

@@ -25,6 +25,237 @@ write_bundle_config() {
   cat /tmp/tauri-bundle-config.json
 }
 
+configure_deterministic_build_env() {
+  local source_date_epoch="${SOURCE_DATE_EPOCH:-1704067200}"
+  local deterministic_rustflags="${RUSTFLAGS:-}"
+  local remap_flag
+
+  [[ "$source_date_epoch" =~ ^[0-9]+$ ]] || {
+    echo "Invalid SOURCE_DATE_EPOCH: $source_date_epoch" >&2
+    exit 1
+  }
+
+  export SOURCE_DATE_EPOCH="$source_date_epoch"
+  export TZ=UTC
+  export LC_ALL=C
+  export LANG=C
+  export ZERO_AR_DATE=1
+  export CARGO_INCREMENTAL=0
+  export CARGO_BUILD_JOBS=1
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+  export CARGO_PROFILE_RELEASE_DEBUG=0
+  export CARGO_PROFILE_RELEASE_STRIP=debuginfo
+
+  for remap_flag in \
+    "--remap-path-prefix=/app=." \
+    "--remap-path-prefix=/root/.cargo=/cargo-home" \
+    "--remap-path-prefix=/root=/home/user"
+  do
+    if [[ "$deterministic_rustflags" != *"$remap_flag"* ]]; then
+      deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$remap_flag"
+    fi
+  done
+
+  if [[ "$TAURI_TARGET" == *"-pc-windows-"* ]]; then
+    local brepro_flag="-C link-arg=/Brepro"
+    if [[ "$deterministic_rustflags" != *"$brepro_flag"* ]]; then
+      deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$brepro_flag"
+    fi
+    local debug_none_flag="-C link-arg=/DEBUG:NONE"
+    if [[ "$deterministic_rustflags" != *"$debug_none_flag"* ]]; then
+      deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$debug_none_flag"
+    fi
+  fi
+
+  export RUSTFLAGS="$deterministic_rustflags"
+}
+
+prepare_windows_nsis_cache() {
+  [[ "$TAURI_TARGET" == *"-pc-windows-"* ]] || return
+
+  local cache_dir="/root/.cache/tauri"
+  local nsis_utils_version="${TAURI_NSIS_UTILS_VERSION:-0.5.3}"
+  local dll_path="$cache_dir/nsis_tauri_utils.dll"
+  local download_url="https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v${nsis_utils_version}/nsis_tauri_utils.dll"
+
+  mkdir -p "$cache_dir"
+  if [[ ! -f "$dll_path" ]]; then
+    echo "==> prefetching nsis_tauri_utils.dll (v${nsis_utils_version})"
+    curl --fail --location --retry 3 --output "$dll_path" "$download_url"
+  fi
+  touch -h -d "@${SOURCE_DATE_EPOCH}" "$dll_path"
+}
+
+normalize_windows_bundle_inputs_once() {
+  [[ "$TAURI_TARGET" == *"-pc-windows-"* ]] || return
+
+  local release_dir="/app/deploy/src-tauri/target/${TAURI_TARGET}/release"
+  [[ -d "$release_dir" ]] || return
+
+  # NSIS can capture file metadata from staged bundle inputs. Keep mtime stable
+  # while tauri is preparing bundle assets.
+  while IFS= read -r -d '' path; do
+    touch -h -d "@${SOURCE_DATE_EPOCH}" -- "$path" 2>/dev/null || true
+  done < <(find "$release_dir" -mindepth 1 -print0 2>/dev/null | LC_ALL=C sort -z)
+
+  touch -h -d "@${SOURCE_DATE_EPOCH}" /root/.cache/tauri/nsis_tauri_utils.dll 2>/dev/null || true
+}
+
+setup_windows_makensis_wrapper() {
+  [[ "$TAURI_TARGET" == *"-pc-windows-"* ]] || return
+
+  local real_makensis
+  real_makensis="$(command -v makensis || true)"
+  [[ -n "$real_makensis" ]] || return
+
+  local wrapper_dir="/tmp/secluso-tool-overrides"
+  local wrapper_path="$wrapper_dir/makensis"
+  mkdir -p "$wrapper_dir"
+
+  cat > "$wrapper_path" <<EOF
+#!/bin/bash
+set -euo pipefail
+: "\${SOURCE_DATE_EPOCH:=1704067200}"
+: "\${TAURI_TARGET:=x86_64-pc-windows-msvc}"
+
+release_dir="/app/deploy/src-tauri/target/\${TAURI_TARGET}/release"
+if [[ -d "\$release_dir" ]]; then
+  if [[ -f "\$release_dir/secluso-deploy.exe" ]]; then
+    if command -v llvm-strip >/dev/null 2>&1; then
+      if llvm-strip --strip-debug "\$release_dir/secluso-deploy.exe" \
+        || llvm-strip -g "\$release_dir/secluso-deploy.exe"; then
+        touch -h -d "@\${SOURCE_DATE_EPOCH}" "\$release_dir/secluso-deploy.exe" 2>/dev/null || true
+        echo "==> stripped debug from secluso-deploy.exe for reproducibility"
+      else
+        echo "==> warning: llvm-strip failed for secluso-deploy.exe; continuing without strip" >&2
+      fi
+    fi
+  fi
+
+  while IFS= read -r -d '' path; do
+    touch -h -d "@\${SOURCE_DATE_EPOCH}" -- "\$path" 2>/dev/null || true
+  done < <(find "\$release_dir" -mindepth 1 -print0 2>/dev/null | LC_ALL=C sort -z)
+fi
+touch -h -d "@\${SOURCE_DATE_EPOCH}" /root/.cache/tauri/nsis_tauri_utils.dll 2>/dev/null || true
+
+snapshot_dir="\$release_dir/repro/windows-pre-nsis"
+mkdir -p "\$snapshot_dir"
+snapshot_file="\$snapshot_dir/input-manifest.tsv"
+{
+  printf 'type\tmode_hex\tmtime_epoch\tsize_bytes\tsha256\trel_path\n'
+
+  while IFS= read -r -d '' path; do
+    rel="\${path#\$release_dir/}"
+    mode_hex="\$(stat -c '%f' -- "\$path" 2>/dev/null || echo '-')"
+    mtime_epoch="\$(stat -c '%Y' -- "\$path" 2>/dev/null || echo '-')"
+    size_bytes="\$(stat -c '%s' -- "\$path" 2>/dev/null || echo '-')"
+    sha256="\$(sha256sum -- "\$path" 2>/dev/null | awk '{print \$1}')"
+    printf 'file\t%s\t%s\t%s\t%s\t%s\n' "\$mode_hex" "\$mtime_epoch" "\$size_bytes" "\$sha256" "\$rel"
+  done < <(find "\$release_dir/nsis" -type f -print0 2>/dev/null | LC_ALL=C sort -z)
+
+  while IFS= read -r -d '' path; do
+    rel="\${path#\$release_dir/}"
+    mode_hex="\$(stat -c '%f' -- "\$path" 2>/dev/null || echo '-')"
+    mtime_epoch="\$(stat -c '%Y' -- "\$path" 2>/dev/null || echo '-')"
+    printf 'dir\t%s\t%s\t-\t-\t%s\n' "\$mode_hex" "\$mtime_epoch" "\$rel"
+  done < <(find "\$release_dir/nsis" -type d -print0 2>/dev/null | LC_ALL=C sort -z)
+
+  if [[ -f "\$release_dir/secluso-deploy.exe" ]]; then
+    mode_hex="\$(stat -c '%f' -- "\$release_dir/secluso-deploy.exe" 2>/dev/null || echo '-')"
+    mtime_epoch="\$(stat -c '%Y' -- "\$release_dir/secluso-deploy.exe" 2>/dev/null || echo '-')"
+    size_bytes="\$(stat -c '%s' -- "\$release_dir/secluso-deploy.exe" 2>/dev/null || echo '-')"
+    sha256="\$(sha256sum -- "\$release_dir/secluso-deploy.exe" 2>/dev/null | awk '{print \$1}')"
+    printf 'file\t%s\t%s\t%s\t%s\t%s\n' "\$mode_hex" "\$mtime_epoch" "\$size_bytes" "\$sha256" "secluso-deploy.exe"
+  fi
+} > "\$snapshot_file"
+
+exec "${real_makensis}" "\$@"
+EOF
+
+  chmod +x "$wrapper_path"
+  export PATH="$wrapper_dir:$PATH"
+}
+
+setup_windows_arm64_clang_wrapper() {
+  [[ "$TAURI_TARGET" == "aarch64-pc-windows-msvc" ]] || return
+  [[ "${TAURI_RUNNER:-}" == "cargo-xwin" ]] || return
+
+  local wrapper_dir="/tmp/secluso-tool-overrides"
+  local clang_wrapper="$wrapper_dir/clang"
+  local clang_cl_wrapper="$wrapper_dir/clang-cl"
+  local real_clang
+  local real_clang_escaped
+  real_clang="$(type -P clang || true)"
+  [[ -n "$real_clang" && -x "$real_clang" ]] || {
+    echo "Unable to resolve real clang binary for arm64 windows wrapper" >&2
+    exit 1
+  }
+  printf -v real_clang_escaped '%q' "$real_clang"
+  mkdir -p "$wrapper_dir"
+
+  cat > "$clang_wrapper" <<EOF
+#!/bin/bash
+set -euo pipefail
+
+real_clang=${real_clang_escaped}
+
+translated=()
+while [[ "\$#" -gt 0 ]]; do
+  case "\$1" in
+    /imsvc)
+      shift
+      [[ "\$#" -gt 0 ]] || break
+      translated+=("-isystem" "\$1")
+      ;;
+    *)
+      translated+=("\$1")
+      ;;
+  esac
+  shift
+done
+
+exec "\$real_clang" "\${translated[@]}"
+EOF
+
+  cat > "$clang_cl_wrapper" <<EOF
+#!/bin/bash
+set -euo pipefail
+
+real_clang=${real_clang_escaped}
+
+# Emulate clang-cl when cargo-xwin expects a clang-cl executable in PATH.
+exec "\$real_clang" --driver-mode=cl "\$@"
+EOF
+
+  chmod +x "$clang_wrapper" "$clang_cl_wrapper"
+
+  export PATH="$wrapper_dir:$PATH"
+  hash -r
+  command -v clang >/dev/null 2>&1 || {
+    echo "clang wrapper not found in PATH after setup" >&2
+    exit 1
+  }
+  command -v clang-cl >/dev/null 2>&1 || {
+    echo "clang-cl wrapper not found in PATH after setup" >&2
+    exit 1
+  }
+  "$clang_wrapper" --version >/dev/null 2>&1 || {
+    echo "clang wrapper self-test failed" >&2
+    "$clang_wrapper" --version || true
+    exit 1
+  }
+  "$clang_cl_wrapper" --version >/dev/null 2>&1 || {
+    echo "clang-cl wrapper self-test failed" >&2
+    "$clang_cl_wrapper" --version || true
+    exit 1
+  }
+  echo "==> arm64 windows clang wrapper active (real clang: $real_clang)"
+
+  # cargo-xwin injects /imsvc-style include args, but ring/cc-rs still shells
+  # out to "clang" for some arm64 Windows C objects. Intercept clang at PATH
+  # level and normalize /imsvc include pairs to clang-compatible flags.
+}
+
 run_debug_preflight() {
   echo "==> build environment snapshot"
   uname -a || true
@@ -102,7 +333,12 @@ run_debug_preflight() {
 }
 
 run_tauri_build() {
-  CARGO_INCREMENTAL=0 pnpm tauri build \
+  prepare_windows_nsis_cache
+  setup_windows_makensis_wrapper
+  setup_windows_arm64_clang_wrapper
+  normalize_windows_bundle_inputs_once
+
+  pnpm tauri build \
     -v -v \
     --target "${TAURI_TARGET}" \
     --runner "${TAURI_RUNNER}" \
@@ -216,6 +452,7 @@ main() {
   : "${TAURI_BUNDLE_TARGETS_JSON:=["appimage","deb","rpm"]}"
 
   configure_rust_log
+  configure_deterministic_build_env
   write_bundle_config
 
   if is_debug_enabled; then
