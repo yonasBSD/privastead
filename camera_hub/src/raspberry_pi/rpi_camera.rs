@@ -40,22 +40,23 @@ const I_FRAME_INTERVAL: usize = TOTAL_FRAME_RATE; // 1-second fragments
 
 //These are for our local SPS/PPS channel
 #[derive(PartialEq, Debug, Clone)]
-pub enum VideoFrameKind {
+pub enum FrameKind {
     RFrame,
     IFrame,
     Sps,
     Pps,
+    Audio,
 }
 
 #[derive(Debug, Clone)]
-pub struct VideoFrame {
+pub struct Frame {
     pub data: Vec<u8>,
-    pub kind: VideoFrameKind,
+    pub kind: FrameKind,
     pub timestamp: SystemTime,
 }
 
-impl VideoFrame {
-    pub fn new(data: Vec<u8>, kind: VideoFrameKind) -> Self {
+impl Frame {
+    pub fn new(data: Vec<u8>, kind: FrameKind) -> Self {
         Self {
             data,
             kind,
@@ -70,9 +71,9 @@ pub struct RaspberryPiCamera {
     state_dir: String,
     video_dir: String,
     thumbnail_dir: String,
-    frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
-    sps_frame: VideoFrame,
-    pps_frame: VideoFrame,
+    frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+    sps_frame: Frame,
+    pps_frame: Frame,
     motion_detection: Arc<Mutex<PipelineController>>,
 }
 
@@ -88,9 +89,9 @@ impl RaspberryPiCamera {
         println!("Initializing Raspberry Pi Camera...");
 
         // Create a channel to receive SPS/PPS frames.
-        let (ps_tx, ps_rx) = unbounded::<VideoFrame>();
+        let (ps_tx, ps_rx) = unbounded::<Frame>();
 
-        // Frame queue holds recently processed H.264 frames.
+        // Frame queue holds recently processed H.264 and audio frames.
         let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
 
         // Start motion detection using raw frames from the shared stream.
@@ -148,6 +149,11 @@ impl RaspberryPiCamera {
         )
             .expect("Failed to start shared stream");
 
+        rpi_dual_stream::start_audio(
+            Arc::clone(&frame_queue),
+        )
+            .expect("Failed to start audio stream");
+
         // Wait for the SPS and PPS frames before continuing.
         let mut sps_frame_opt = None;
         let mut pps_frame_opt = None;
@@ -159,8 +165,8 @@ impl RaspberryPiCamera {
 
             let frame = frame_attempt.unwrap();
             match frame.kind {
-                VideoFrameKind::Sps => sps_frame_opt = Some(frame),
-                VideoFrameKind::Pps => pps_frame_opt = Some(frame),
+                FrameKind::Sps => sps_frame_opt = Some(frame),
+                FrameKind::Pps => pps_frame_opt = Some(frame),
                 _ => {} // ignore unexpected frames
             }
         }
@@ -186,15 +192,17 @@ impl RaspberryPiCamera {
     async fn copy<M: Mp4>(
         mp4: &mut M,
         duration: Option<u64>,
-        frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     ) -> Result<(), Error> {
         let recording_window = duration.map(|secs| Duration::new(secs, 0));
         let recording_start_time = Instant::now();
 
         let mut started = false;             // started first fragment after first IDR
         let mut samples_in_fragment = 0u32;  // count samples in the current fragment
-        let mut frame_count: u64 = 0;
-        let ticks_per_frame: u64 = 90_000 / TOTAL_FRAME_RATE as u64;
+        let mut video_frame_count: u64 = 0;
+        let ticks_per_video_frame: u64 = 90_000 / TOTAL_FRAME_RATE as u64;
+
+        let mut audio_sample_count: u64 = 0;
 
         loop {
             let frame = {
@@ -210,41 +218,47 @@ impl RaspberryPiCamera {
             };
 
             // Open the very first fragment on the first IDR
-            if !started && frame.kind == VideoFrameKind::IFrame {
+            if !started && frame.kind == FrameKind::IFrame {
                 started = true;
                 samples_in_fragment = 0;
             }
             // On later IDR, close the previous fragment if it has samples.
-            else if started && frame.kind == VideoFrameKind::IFrame && samples_in_fragment > 0 {
+            else if started && frame.kind == FrameKind::IFrame && samples_in_fragment > 0 {
                 mp4.finish_fragment().await?;
                 samples_in_fragment = 0;
             }
 
             if started {
-                let ts = frame_count * ticks_per_frame;
+                if frame.kind == FrameKind::Audio {
+                    let ts_audio = audio_sample_count;      // 48k timescale
+                    mp4.audio(&frame.data, ts_audio).await?;
+                    audio_sample_count += 1024;             // AAC-LC fixed
+                    continue;
+                } else {
+                    let ts = video_frame_count * ticks_per_video_frame;
+                    let avcc = Self::annexb_to_avcc_frame(&frame.data, /*strip_aud*/ true, /*strip_ps*/ true);
 
-                let avcc = Self::annexb_to_avcc_frame(&frame.data, /*strip_aud*/ true, /*strip_ps*/ true);
+                    // Prepend per-frame SEI carrying capture time
+                    let sei = Self::make_sei_unreg_avcc(
+                        frame
+                            .timestamp
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    );
+                    let mut sample = Vec::with_capacity(sei.len() + avcc.len());
+                    sample.extend_from_slice(&sei);
+                    sample.extend_from_slice(&avcc);
 
-                // Prepend per-frame SEI carrying capture time
-                let sei = Self::make_sei_unreg_avcc(
-                    frame
-                        .timestamp
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64,
-                );
-                let mut sample = Vec::with_capacity(sei.len() + avcc.len());
-                sample.extend_from_slice(&sei);
-                sample.extend_from_slice(&avcc);
+                    mp4.video(
+                        &sample,
+                        ts,
+                        frame.kind == FrameKind::IFrame,
+                    ).await?;
 
-                mp4.video(
-                    &sample,
-                    ts,
-                    frame.kind == VideoFrameKind::IFrame,
-                ).await?;
-
-                frame_count += 1;
-                samples_in_fragment += 1;
+                    video_frame_count += 1;
+                    samples_in_fragment += 1;
+                }
             }
 
             if let Some(window) = recording_window {
@@ -263,9 +277,9 @@ impl RaspberryPiCamera {
     async fn write_mp4(
         filename: String,
         duration: u64,
-        frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
-        sps_frame: VideoFrame,
-        pps_frame: VideoFrame,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        sps_frame: Frame,
+        pps_frame: Frame,
     ) -> Result<(), Error> {
         // Create the primary MP4 file.
         let file = tokio::fs::File::create(&filename).await?;
@@ -288,7 +302,7 @@ impl RaspberryPiCamera {
                 // For MP4, remove the start code (assumes a 4-byte start code).
                 sps_bytes, pps_bytes,
             ),
-            RpiCameraAudioParameters::default(),
+            RpiCameraAudioParameters::new(),
             file,
         )
             .await?;
@@ -360,9 +374,9 @@ impl RaspberryPiCamera {
     /// Streams fmp4 video.
     async fn write_fmp4(
         livestream_writer: LivestreamWriter,
-        frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
-        sps_frame: VideoFrame,
-        pps_frame: VideoFrame,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        sps_frame: Frame,
+        pps_frame: Frame,
     ) -> Result<(), Error> {
         // Detect 3/4-byte AnnexB start codes
         fn start_code_len(b: &[u8]) -> usize {
@@ -384,7 +398,7 @@ impl RaspberryPiCamera {
 
         let mut fmp4 = Fmp4Writer::new(
             RpiCameraVideoParameters::new(sps.to_vec(), pps.to_vec()),
-            RpiCameraAudioParameters::default(),
+            RpiCameraAudioParameters::new(),
             livestream_writer,
         ).await?;
         fmp4.finish_header(None).await?;
@@ -633,6 +647,7 @@ impl CodecParameters for RpiCameraVideoParameters {
         Ok(())
     }
 
+    // Not used
     fn get_clock_rate(&self) -> u32 { 0 }
 
     fn get_dimensions(&self) -> (u32, u32) {
@@ -640,21 +655,122 @@ impl CodecParameters for RpiCameraVideoParameters {
     }
 }
 
-// Not used for now.
-#[derive(Default)]
-struct RpiCameraAudioParameters {}
+struct RpiCameraAudioParameters {
+    sample_rate: u32, // 48000
+    channels: u16,    // 1
+    asc: [u8; 2],     // AudioSpecificConfig
+}
+
+impl RpiCameraAudioParameters {
+    fn new() -> Self {
+        Self {
+            sample_rate: 48_000,
+            channels: 1,
+            asc: [0x11, 0x88], // AAC-LC, 48kHz (idx=3), mono (1)
+        }
+    }
+}
 
 impl CodecParameters for RpiCameraAudioParameters {
-    fn write_codec_box(&self, _buf: &mut BytesMut) -> Result<(), Error> {
+    fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        write_box!(buf, b"mp4a", {
+            // 6 reserved bytes
+            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
+            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
+
+            // data_reference_index
+            buf.put_u16(1);
+
+            // AudioSampleEntry
+            buf.put_u16(0); // version
+            buf.put_u16(0); // revision
+            buf.put_u32(0); // vendor
+
+            buf.put_u16(self.channels); // channelcount
+            buf.put_u16(16);            // samplesize
+            buf.put_u16(0);             // compressionid
+            buf.put_u16(0);             // packetsize
+            buf.put_u32(self.sample_rate << 16); // samplerate 16.16
+
+            // ES Descriptor box
+            write_box!(buf, b"esds", {
+                // FullBox: version(1) + flags(3)
+                buf.put_u32(0);
+
+                let asc = &self.asc;
+
+                // Build the descriptor payload in a temp vec, then write with size.
+                let mut d = Vec::new();
+
+                // ES_Descriptor
+                d.push(0x03);
+                let mut es_payload = Vec::new();
+                es_payload.extend_from_slice(&0x0002u16.to_be_bytes()); // ES_ID
+                es_payload.push(0x00); // flags
+
+                // DecoderConfigDescriptor (tag 0x04) ---
+                let mut dec_payload = Vec::new();
+                dec_payload.push(0x40); // objectTypeIndication = MPEG-4 Audio
+                dec_payload.push(0x15); // streamType=5 (AudioStream) <<2 | 1 reserved
+                dec_payload.extend_from_slice(&[0x00, 0x00, 0x00]); // bufferSizeDB (unknown)
+                dec_payload.extend_from_slice(&0u32.to_be_bytes()); // maxBitrate
+                dec_payload.extend_from_slice(&0u32.to_be_bytes()); // avgBitrate
+
+                // DecoderSpecificInfo (tag 0x05) inside DecoderConfigDescriptor
+                dec_payload.push(0x05);
+                dec_payload.push(asc.len() as u8);
+                dec_payload.extend_from_slice(asc);
+
+                // Write DecoderConfigDescriptor: tag + length + payload
+                es_payload.push(0x04);
+                es_payload.extend_from_slice(&write_desc_len(dec_payload.len()));
+                es_payload.extend_from_slice(&dec_payload);
+
+                // SLConfigDescriptor (tag 0x06) is a sibling of 0x04 inside ES_Descriptor
+                es_payload.push(0x06);
+                es_payload.push(0x01);
+                es_payload.push(0x02);
+
+                // Write length for ES_Descriptor
+                d.extend_from_slice(&write_desc_len(es_payload.len()));
+                d.extend_from_slice(&es_payload);
+
+                buf.extend_from_slice(&d);
+            });
+        });
+
         Ok(())
     }
 
-    // Not used
     fn get_clock_rate(&self) -> u32 {
-        0
+        self.sample_rate
     }
 
     fn get_dimensions(&self) -> (u32, u32) {
         (0, 0)
     }
+}
+
+// Size encoding: 7-bit continuation
+fn write_desc_len(mut len: usize) -> Vec<u8> {
+    // Up to 4 bytes
+    let mut out = vec![0u8; 4];
+    for i in (0..4).rev() {
+        out[i] = (len & 0x7F) as u8;
+        len >>= 7;
+    }
+    // Set continuation bit on first 3
+    out[0] |= 0x80;
+    out[1] |= 0x80;
+    out[2] |= 0x80;
+
+    // Trim leading 0x80 chunks if possible
+    while out.len() > 1 && out[0] == 0x80 && (out[1] & 0x80) != 0 {
+        out.remove(0);
+    }
+    // If needed, also trim if the very first byte is 0
+    while out.len() > 1 && out[0] == 0 {
+        out.remove(0);
+    }
+    out
 }

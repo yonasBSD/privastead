@@ -14,8 +14,9 @@ use std::{
     thread,
     time::Duration,
 };
+use bytes::Buf;
 
-use crate::raspberry_pi::rpi_camera::{VideoFrame, VideoFrameKind};
+use crate::raspberry_pi::rpi_camera::{Frame, FrameKind};
 use anyhow::anyhow;
 use bytes::BytesMut;
 use crossbeam_channel::Sender;
@@ -30,8 +31,8 @@ pub fn start(
     total_frame_rate: usize,
     i_frame_interval: usize,
     pipeline_controller: Arc<Mutex<PipelineController>>,
-    frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
-    ps_tx: Sender<VideoFrame>,
+    frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+    ps_tx: Sender<Frame>,
     motion_fps: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
@@ -79,11 +80,11 @@ pub fn start(
                                     // Update the frame timestamp on extraction.
                                     frame.timestamp = SystemTime::now();
 
-                                    if !sps_sent && frame.kind == VideoFrameKind::Sps {
+                                    if !sps_sent && frame.kind == FrameKind::Sps {
                                         let _ = ps_tx.send(frame.clone());
                                         sps_sent = true;
                                     }
-                                    if !pps_sent && frame.kind == VideoFrameKind::Pps {
+                                    if !pps_sent && frame.kind == FrameKind::Pps {
                                         let _ = ps_tx.send(frame.clone());
                                         pps_sent = true;
                                     }
@@ -159,7 +160,7 @@ fn connect_to_socket() -> Option<UnixStream> {
     None // If all attempts fail, we return None.
 }
 
-fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>, frame: VideoFrame) {
+fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<Frame>>>, frame: Frame) {
     let time_window = Duration::new(5, 0);
     let mut queue = frame_queue.lock().unwrap();
     queue.push_back(frame.clone());
@@ -179,7 +180,7 @@ fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>, frame: 
 }
 
 /// A modified H264 extraction frame method when I had issues working with the old ip.rs one
-fn extract_h264_frame(buffer: &mut BytesMut) -> anyhow::Result<Option<VideoFrame>> {
+fn extract_h264_frame(buffer: &mut BytesMut) -> anyhow::Result<Option<Frame>> {
     const MAX_NAL_UNIT_SIZE: usize = 2 * 1024 * 1024; // 2 MB maximum
 
     // Instead of discarding data, require the buffer to begin with a valid start code.
@@ -263,12 +264,104 @@ fn extract_h264_frame(buffer: &mut BytesMut) -> anyhow::Result<Option<VideoFrame
     }
 
     let kind = match nal_type {
-        7 => VideoFrameKind::Sps,
-        8 => VideoFrameKind::Pps,
-        5 => VideoFrameKind::IFrame,
-        1 => VideoFrameKind::RFrame,
-        _ => VideoFrameKind::RFrame, // Extend as needed.
+        7 => FrameKind::Sps,
+        8 => FrameKind::Pps,
+        5 => FrameKind::IFrame,
+        1 => FrameKind::RFrame,
+        _ => FrameKind::RFrame, // Extend as needed.
     };
 
-    Ok(Some(VideoFrame::new(nal_unit.to_vec(), kind)))
+    Ok(Some(Frame::new(nal_unit.to_vec(), kind)))
+}
+
+fn adts_frame_len(header: &[u8]) -> Option<usize> {
+    if header.len() < 7 { return None; }
+    // syncword 0xFFF
+    if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 { return None; }
+    let protection_absent = header[1] & 0x01;
+    let hdr_len = if protection_absent == 1 { 7 } else { 9 };
+
+    let frame_length = (((header[3] & 0x03) as usize) << 11)
+        | ((header[4] as usize) << 3)
+        | (((header[5] & 0xE0) as usize) >> 5);
+
+    if frame_length < hdr_len { return None; }
+    Some(frame_length)
+}
+
+fn strip_adts(frame: &[u8]) -> Option<&[u8]> {
+    if frame.len() < 7 { return None; }
+    if frame[0] != 0xFF || (frame[1] & 0xF0) != 0xF0 { return None; }
+    let protection_absent = frame[1] & 0x01;
+    let hdr_len = if protection_absent == 1 { 7 } else { 9 };
+    if frame.len() < hdr_len { return None; }
+    Some(&frame[hdr_len..])
+}
+
+pub fn start_audio(
+    frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+
+    let cmd = "\
+        arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw | \
+        sox -t raw -b 16 -e signed-integer -r 48000 -c 1 - \
+            -t raw -b 16 -e signed-integer -r 48000 -c 1 - \
+            highpass 100 lowpass 7000 gain 20 | \
+        fdkaac --raw --raw-channels 1 --raw-rate 48000 \
+                --bitrate 96k --transport-format 2 -o - -";
+
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
+
+    // Spawn a thread to read arecord|sox's stdout and extract audio frames.
+    {
+        thread::spawn(move || {
+            let mut r = BufReader::new(stdout);
+            let mut buf = BytesMut::with_capacity(64 * 1024);
+            let mut tmp = [0u8; 4096];
+
+            loop {
+                match r.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+
+                        loop {
+                            if buf.len() < 7 { break; }
+                            let len = match adts_frame_len(&buf[..7]) {
+                                Some(l) => l,
+                                None => {
+                                    // resync: drop 1 byte
+                                    buf.advance(1);
+                                    continue;
+                                }
+                            };
+                            if buf.len() < len { break; }
+
+                            let adts = buf.split_to(len).to_vec();
+                            if let Some(aac_au) = strip_adts(&adts) {
+                                let frame = Frame {
+                                    data: aac_au.to_vec(),
+                                    kind: FrameKind::Audio,
+                                    timestamp: SystemTime::now(),
+                                };
+                                add_frame_and_drop_old(Arc::clone(&frame_queue), frame);
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    Ok(())
 }

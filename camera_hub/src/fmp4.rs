@@ -30,7 +30,6 @@ use crate::write_box;
 use anyhow::{anyhow, Error};
 use bytes::{BufMut, BytesMut};
 
-use cfg_if::cfg_if;
 use std::convert::TryFrom;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -219,11 +218,8 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
             });
 
             self.core.write_video_trak(&mut buf, &self.video_trak.core)?;
-            cfg_if! {
-                if #[cfg(feature = "ip")] {
-                    self.core.write_audio_trak(&mut buf, &self.audio_trak.core)?;
-                }
-            }
+            // FIXME: disabling this for now as it breaks our livestreaming.
+            //self.core.write_audio_trak(&mut buf, &self.audio_trak.core)?;
 
             write_box!(&mut buf, b"mvex", {
                 write_box!(&mut buf, b"mehd", {
@@ -245,18 +241,17 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
                 });
 
                 // trex for audio
-                cfg_if! {
-                    if #[cfg(feature = "ip")] {
-                        write_box!(&mut buf, b"trex", {
-                            buf.put_u32(1 << 24);
-                            buf.put_u32(2);
-                            buf.put_u32(1);
-                            buf.put_u32(0);
-                            buf.put_u32(0);
-                            buf.put_u32(fmp4_flags::with_reserved(0x0001_0000));
-                        });
-                    }
-                }
+                // FIXME: disabling this for now as it breaks our livestreaming.
+                /*
+                write_box!(&mut buf, b"trex", {
+                    buf.put_u32(1 << 24);
+                    buf.put_u32(2);
+                    buf.put_u32(1);
+                    buf.put_u32(0);
+                    buf.put_u32(0);
+                    buf.put_u32(fmp4_flags::with_reserved(0x0001_0000));
+                });
+                */
             });
         });
 
