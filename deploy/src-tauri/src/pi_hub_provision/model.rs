@@ -75,6 +75,7 @@ pub(crate) struct RuntimeConfig {
   pub base_image: String,
   pub output_name: String,
   pub hostname: String,
+  pub variant: String,
   pub user: User,
   pub ssh: Ssh,
   pub wifi: Option<Wifi>,

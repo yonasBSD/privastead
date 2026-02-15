@@ -193,6 +193,7 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
     base_image: cfg.base_image.clone(),
     output_name: cfg.output_name.clone(),
     hostname: cfg.hostname.clone(),
+    variant: variant.to_string(),
     user: cfg.user.clone(),
     ssh: cfg.ssh.clone(),
     wifi: cfg.wifi.clone(),

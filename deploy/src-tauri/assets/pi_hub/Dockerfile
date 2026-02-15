@@ -5,7 +5,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       bash ca-certificates curl xz-utils jq \
-      util-linux kmod \
+      util-linux kmod udev \
       unzip \
       parted dosfstools e2fsprogs rsync \
     ; \

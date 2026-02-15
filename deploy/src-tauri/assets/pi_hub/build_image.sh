@@ -15,6 +15,46 @@ emit() {
   printf '::SECLUSO_EVENT::{"level":"%s","step":"%s","msg":"%s"}\n' "$level" "$step" "$msg"
 }
 
+ensure_loop_devices() {
+  # Fixes case where the host already had many loop devices 
+  # in use (for example snap mounts), and a failed run could also leave stale mappings behind. This helper makes
+  # sure loop support is present and that the container sees enough /dev/loopN device files to request a free slot.
+
+  local loop_max="${LOOP_MAX:-63}"
+
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe loop "max_loop=$((loop_max + 1))" 2>/dev/null || modprobe loop 2>/dev/null || true
+  fi
+
+  if [[ ! -e /dev/loop-control ]]; then
+    mknod -m 0600 /dev/loop-control c 10 237 2>/dev/null || true
+  fi
+
+  for i in $(seq 0 "$loop_max"); do
+    [[ -b "/dev/loop$i" ]] || mknod -m 0660 "/dev/loop$i" b 7 "$i" 2>/dev/null || true
+  done
+
+  if [[ ! -e /dev/loop-control ]]; then
+    echo "Missing /dev/loop-control. Run Docker with --privileged and ensure the host loop module is available." >&2
+    exit 1
+  fi
+
+  if ! compgen -G "/dev/loop[0-9]*" > /dev/null; then
+    echo "No /dev/loopN devices were found. Run Docker with --privileged and ensure the host loop module is loaded." >&2
+    exit 1
+  fi
+}
+
+cleanup_stale_work_loops() {
+  # Old loop mappings for working.img from previous failed runs can keep
+  # consuming loop slots even after the file is gone. We detach only mappings tied to this build path so we free
+  # capacity for the current run without messing with unrelated loop devices.
+  while read -r dev; do
+    [[ -n "$dev" ]] || continue
+    losetup -d "$dev" 2>/dev/null || true
+  done < <(losetup -a 2>/dev/null | awk -F: '/\/work\/working\.img|\/working\.img/{print $1}')
+}
+
 BASE_IMAGE="$(jqr '.base_image')"
 OUT_NAME="$(jqr '.output_name')"
 HOSTNAME="$(jqr '.hostname')"
@@ -24,6 +64,7 @@ USER_PASS="$(jqr '.user.password')"
 
 SSH_ENABLE="$(jqr '.ssh.enable // false')"
 HAS_WIFI="$(jqr '.wifi != null')"
+VARIANT="$(jqr '.variant // "diy"')"
 
 HAS_SECLUSO="$(jqr '.secluso != null')"
 if [[ "$HAS_SECLUSO" == "true" ]]; then
@@ -86,8 +127,29 @@ ROOT="$MNT/root"
 run mkdir -p "$BOOT" "$ROOT"
 
 # create loop devices for boot and root
-LOOP_ROOT="$(losetup --find --show --offset "$ROOT_OFF" --sizelimit "$ROOT_SIZE" "$WORK_IMG")"
-LOOP_BOOT="$(losetup --find --show --offset "$BOOT_OFF" --sizelimit "$BOOT_SIZE" "$WORK_IMG")"
+if [[ ! -f "$WORK_IMG" ]]; then
+  echo "Working image is missing: $WORK_IMG" >&2
+  ls -la "$WORK" >&2 || true
+  exit 1
+fi
+
+ensure_loop_devices
+cleanup_stale_work_loops
+
+if ! LOOP_ROOT="$(losetup --find --show --offset "$ROOT_OFF" --sizelimit "$ROOT_SIZE" "$WORK_IMG")"; then
+  echo "Failed to attach root loop device from $WORK_IMG." >&2
+  ls -l /dev/loop* /dev/loop-control >&2 || true
+  losetup -a >&2 || true
+  exit 1
+fi
+
+if ! LOOP_BOOT="$(losetup --find --show --offset "$BOOT_OFF" --sizelimit "$BOOT_SIZE" "$WORK_IMG")"; then
+  echo "Failed to attach boot loop device from $WORK_IMG." >&2
+  ls -l /dev/loop* /dev/loop-control >&2 || true
+  losetup -a >&2 || true
+  losetup -d "$LOOP_ROOT" 2>/dev/null || true
+  exit 1
+fi
 
 echo "+ LOOP_ROOT=$LOOP_ROOT (rootfs)" >&2
 echo "+ LOOP_BOOT=$LOOP_BOOT (bootfs)" >&2
@@ -225,6 +287,12 @@ if [[ -n "$PKGS" ]]; then
   emit "info" "packages" "Installing base packages..."
   run chroot "$ROOT" bash -lc "apt-get update"
   run chroot "$ROOT" bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS"
+fi
+
+if [[ "$VARIANT" == "official" ]]; then
+  emit "info" "official" "Applying official variant customizations..."
+  # official-only customization area. Keep extra setup that should not land in DIY images here
+  :
 fi
 
 if [[ "$HAS_SECLUSO" == "true" ]]; then
