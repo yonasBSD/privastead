@@ -19,10 +19,25 @@ WORKDIR /app
 
 RUN set -eux; \
     apt-get update; \
+    webkit_41_pkgs='libayatana-appindicator3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev'; \
+    webkit_40_pkgs='libappindicator3-dev libwebkit2gtk-4.0-dev libjavascriptcoregtk-4.0-dev libsoup2.4-dev'; \
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --simulate ${webkit_41_pkgs}; then \
+      webkit_pkgs="${webkit_41_pkgs}"; \
+      echo "Using GTK/WebKit package set: 4.1"; \
+    elif DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --simulate ${webkit_40_pkgs}; then \
+      webkit_pkgs="${webkit_40_pkgs}"; \
+      echo "Using GTK/WebKit package set: 4.0"; \
+    else \
+      echo "No resolvable GTK/WebKit package set on this base image" >&2; \
+      apt-cache policy libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev || true; \
+      apt-cache policy libwebkit2gtk-4.0-dev libjavascriptcoregtk-4.0-dev libsoup2.4-dev libappindicator3-dev || true; \
+      exit 1; \
+    fi; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg \
       nodejs npm \
       bash \
+      libfaketime \
       pkg-config \
       xdg-utils \
       libssl-dev \
@@ -34,18 +49,8 @@ RUN set -eux; \
       patchelf file xz-utils zip unzip \
       squashfs-tools desktop-file-utils \
       strace procps binutils \
-      rpm nsis clang llvm lld; \
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      libayatana-appindicator3-dev \
-      libwebkit2gtk-4.1-dev \
-      libjavascriptcoregtk-4.1-dev \
-      libsoup-3.0-dev; then \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        libappindicator3-dev \
-        libwebkit2gtk-4.0-dev \
-        libjavascriptcoregtk-4.0-dev \
-        libsoup2.4-dev; \
-    fi; \
+      rpm nsis clang llvm lld \
+      ${webkit_pkgs}; \
     rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g pnpm@10.29.1

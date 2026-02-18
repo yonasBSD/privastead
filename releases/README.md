@@ -152,11 +152,16 @@ manifest hash presence
 manifest hash equals on-disk file hash
 run A file hash equals run B file hash
 
+Compare is strict byte-for-byte. If file hashes differ, compare fails.
+
 It checks metadata first on purpose, so you can quickly see if the two runs even used the same inputs. If metadata already differs, you are not comparing like-for-like. If metadata matches and the binary hashes still differ, that is the case to treat as a true reproducibility break.
 
 ## Deploy specifics you will probably hit
 
-Deploy mode checks which bundle types the local Tauri CLI supports by parsing pnpm tauri build --help. If the host cannot package a requested non Apple target, Docker fallback is used when available.
+For Apple targets, deploy mode checks which bundle types the local Tauri CLI supports by parsing pnpm tauri build --help.
+Non-Apple deploy targets always build in Docker fallback.
+Apple deploy targets still require host-native bundling.
+Docker Linux deploy builds also perform a single-pass deterministic post-bundle rewrite of wAppImage/deb/rpm outputs so normal one-run builds stay byte-stable. Set SECLUSO_CANONICALIZE_LINUX_BUNDLES=0 to disable.
 
 Apple deploy bundles need host-native support. If the host cannot bundle a requested Apple triple, the run fails with a clear message instead of silently using another path.
 

@@ -128,9 +128,21 @@ ensure_required_tools_for_mode() {
     return
   fi
 
+  local requires_host_cc=0
+  local plan_triple
+  for plan_triple in "${TRIPLES[@]}"; do
+    if is_apple_triple "$plan_triple"; then
+      requires_host_cc=1
+      break
+    fi
+  done
+
   require_tool rustc
-  require_tool node
-  require_tool pnpm
+  if [[ "$requires_host_cc" -eq 1 ]]; then
+    require_tool cc
+    require_tool node
+    require_tool pnpm
+  fi
 
   if [[ "$DEPLOY_REQUIRES_DOCKER" -eq 1 ]]; then
     require_tool docker

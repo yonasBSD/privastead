@@ -4,10 +4,21 @@ set -euo pipefail
 
 install -d /root/.cache/tauri
 
-# The Tauri appimage pipeline always looks for linuxdeploy plugins in
-# /root/.cache/tauri. We pre-seed deterministic wrappers there so plugin
-# resolution behaves consistently in Docker builders.
-cat >/root/.cache/tauri/linuxdeploy-plugin-gstreamer.sh <<'EOF' && chmod +x /root/.cache/tauri/linuxdeploy-plugin-gstreamer.sh
+linuxdeploy_url="https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
+linuxdeploy_bin="/root/.cache/tauri/linuxdeploy-x86_64.AppImage"
+linuxdeploy_tmp="${linuxdeploy_bin}.tmp"
+
+# Keep linuxdeploy at the canonical path as a real AppImage binary.
+# The appimage output plugin mutates the running linuxdeploy file with the dd utility
+# If this path is a shell wrapper, that mutation corrupts the wrapper shebang
+if [ ! -x "$linuxdeploy_bin" ]; then
+  curl -fsSL "$linuxdeploy_url" -o "$linuxdeploy_tmp"
+  mv "$linuxdeploy_tmp" "$linuxdeploy_bin"
+  chmod +x "$linuxdeploy_bin"
+fi
+
+# The Tauri appimage pipeline looks for plugins in /root/.cache/tauri.
+cat >/root/.cache/tauri/linuxdeploy-plugin-gstreamer.sh <<'EOS' && chmod +x /root/.cache/tauri/linuxdeploy-plugin-gstreamer.sh
 #!/bin/sh
 set -eu
 
@@ -17,55 +28,22 @@ if [ "${1:-}" = "--plugin-api-version" ]; then
 fi
 
 exit 0
-EOF
+EOS
 
 curl -fsSL https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh \
   -o /root/.cache/tauri/linuxdeploy-plugin-gtk.real.sh
 chmod +x /root/.cache/tauri/linuxdeploy-plugin-gtk.real.sh
 
-cat >/root/.cache/tauri/linuxdeploy-plugin-gtk.sh <<'EOF' && chmod +x /root/.cache/tauri/linuxdeploy-plugin-gtk.sh
+cat >/root/.cache/tauri/linuxdeploy-plugin-gtk.sh <<'EOS' && chmod +x /root/.cache/tauri/linuxdeploy-plugin-gtk.sh
 #!/bin/sh
 set -eu
-
-debug_enabled() {
-  case "${DEBUG:-0}" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-if debug_enabled; then
-  log_file="${LINUXDEPLOY_GTK_WRAPPER_LOG:-/tmp/linuxdeploy-plugin-gtk-wrapper.log}"
-  {
-    printf 'ts=%s pid=%s shell=%s bash_version=%s args=' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$0" "${BASH_VERSION:-<none>}"
-    printf '%s ' "$@"
-    printf '\n'
-  } >>"$log_file" 2>/dev/null || true
-fi
 
 exec bash /root/.cache/tauri/linuxdeploy-plugin-gtk.real.sh "$@"
-EOF
+EOS
 
-cat >/root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage <<'EOF' && chmod +x /root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage
+cat >/root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage <<'EOS' && chmod +x /root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage
 #!/bin/sh
 set -eu
-
-debug_enabled() {
-  case "${DEBUG:-0}" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-if debug_enabled; then
-  log_file="${LINUXDEPLOY_APPIMAGE_WRAPPER_LOG:-/tmp/linuxdeploy-plugin-appimage-wrapper.log}"
-  {
-    printf 'ts=%s pid=%s shell=%s args=' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$0"
-    printf '%s ' "$@"
-    printf '\n'
-    printf 'env APPDIR=%s OUTPUT=%s LINUXDEPLOY=%s ARCH=%s\n' "${APPDIR:-}" "${OUTPUT:-}" "${LINUXDEPLOY:-}" "${ARCH:-}"
-  } >>"$log_file" 2>/dev/null || true
-fi
 
 while [ "${1:-}" = "--appimage-extract-and-run" ]; do
   shift
@@ -86,15 +64,35 @@ case "${1:-}" in
     ;;
 esac
 
-if [ -z "${APPDIR:-}" ]; then
-  echo "linuxdeploy appimage wrapper: APPDIR is not set" >&2
+resolved_appdir="${APPDIR:-}"
+if [ -z "$resolved_appdir" ]; then
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--appdir" ]; then
+      resolved_appdir="$arg"
+      break
+    fi
+    case "$arg" in
+      --appdir=*)
+        resolved_appdir="${arg#--appdir=}"
+        break
+        ;;
+    esac
+    prev="$arg"
+  done
+fi
+
+if [ -z "$resolved_appdir" ]; then
+  echo "linuxdeploy appimage wrapper: APPDIR is not set and --appdir was not provided" >&2
   exit 1
 fi
 
 embedded_plugin=""
 for candidate in \
-  "${APPDIR}/plugins/linuxdeploy-plugin-appimage/AppRun" \
-  "${APPDIR}/usr/bin/linuxdeploy-plugin-appimage"
+  "${resolved_appdir}/plugins/linuxdeploy-plugin-appimage/AppRun" \
+  "${resolved_appdir}/usr/bin/linuxdeploy-plugin-appimage" \
+  "${resolved_appdir}/usr/lib/linuxdeploy-plugin-appimage/AppRun" \
+  "${resolved_appdir}/usr/lib/linuxdeploy/plugins/linuxdeploy-plugin-appimage"
 do
   if [ -x "$candidate" ]; then
     embedded_plugin="$candidate"
@@ -102,13 +100,37 @@ do
   fi
 done
 
-if [ -n "$embedded_plugin" ]; then
-  exec "$embedded_plugin" "$@"
+if [ -z "$embedded_plugin" ]; then
+  # linuxdeploy internals can vary between releases; probe deeper before failing.
+  for candidate in $(find "${resolved_appdir}" -maxdepth 6 \( -type f -o -type l \) \
+    \( -name 'linuxdeploy-plugin-appimage*' -o -name 'AppRun' \) \
+    -perm -111 2>/dev/null | LC_ALL=C sort); do
+    case "$(basename "$candidate")" in
+      AppRun|linuxdeploy-plugin-appimage|linuxdeploy-plugin-appimage.AppImage)
+        embedded_plugin="$candidate"
+        break
+        ;;
+    esac
+  done
 fi
 
-echo "linuxdeploy appimage wrapper: embedded plugin not found in expected locations under $APPDIR" >&2
-exit 1
-EOF
+if [ -z "$embedded_plugin" ] && command -v linuxdeploy-plugin-appimage >/dev/null 2>&1; then
+  embedded_plugin="$(command -v linuxdeploy-plugin-appimage)"
+fi
+
+if [ -z "$embedded_plugin" ]; then
+  echo "linuxdeploy appimage wrapper: embedded plugin not found under $resolved_appdir" >&2
+  exit 1
+fi
+
+# appimagetool already passes explicit mksquashfs timestamp flags.
+# Leaving SOURCE_DATE_EPOCH set causes mksquashfs to abort.
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+  unset SOURCE_DATE_EPOCH
+fi
+
+exec "$embedded_plugin" "$@"
+EOS
 
 # Keep extensionless aliases because different linuxdeploy execution modes may
 # probe plugins by either extensioned or extensionless names.

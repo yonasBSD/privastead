@@ -5,12 +5,10 @@
 #
 # Desktop app distribution has fundamentally different mechanics than raw Rust
 # binaries... each different OS expects different packaging formats, and host tooling often
-# determines what can be produced natively. This pipeline therefore supports a
-# dual strategy, seen below...
+# determines what can be produced natively. This pipeline uses:
 #
-# 1) Native host bundling when the local Tauri CLI supports the target bundle.
-# 2) Docker fallback builders for non-Apple targets when native bundling is not
-#    available on the current host.
+# 1) Native host bundling for Apple targets.
+# 2) Docker builders for non-Apple targets.
 #
 # Regardless of path, all artifacts are normalized into:
 #   artifacts/<triple>/...
@@ -36,25 +34,26 @@ write_docker_diagnostic_summary() {
   # lines that usually explain AppImage packaging failures (linuxdeploy command,
   # plugin probes, subprocess exit codes, and strace status correlation) plus a
   # short tail of the full log for surrounding context.
+
   {
     echo "Docker buildx diagnostic summary"
     echo "timestamp_utc=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     echo "triple=$triple"
     echo "source_log=$source_log"
     echo
-    echo "== Key AppImage/linuxdeploy signals (with context) =="
+    echo "== Key failure signals (with context) =="
     if command -v rg >/dev/null 2>&1; then
       rg -n -C 6 \
-        'Bundling \[tauri_bundler::bundle::linux::appimage::linuxdeploy\]|Running \[tauri_bundler::utils\] Command .*/linuxdeploy-x86_64\.AppImage|terminate called after throwing an instance|what\(\):  subprocess failed|manual linuxdeploy replay|exit code \(|appimage wrapper log|strace status=2 correlation|extracted AppRun strace status=2 correlation|ERROR: Could not find plugin|linuxdeploy binary candidate|linuxdeploy-plugin-appimage|linuxdeploy-plugin-gtk|docker buildx failed' \
+        'failed to bundle project|failed to run .*linuxdeploy|No such file or directory \(os error 2\)|ERROR: Failed to run plugin|FATAL ERROR:SOURCE_DATE_EPOCH|mksquashfs .* exited with code|embedded plugin not found|Expected an AppImage bundle|Docker buildx failed' \
         "$source_log" || true
     else
       grep -nE \
-        'Bundling \[tauri_bundler::bundle::linux::appimage::linuxdeploy\]|Running \[tauri_bundler::utils\] Command .*/linuxdeploy-x86_64\.AppImage|terminate called after throwing an instance|what\(\):  subprocess failed|manual linuxdeploy replay|exit code \(|appimage wrapper log|strace status=2 correlation|extracted AppRun strace status=2 correlation|ERROR: Could not find plugin|linuxdeploy binary candidate|linuxdeploy-plugin-appimage|linuxdeploy-plugin-gtk|docker buildx failed' \
+        'failed to bundle project|failed to run .*linuxdeploy|No such file or directory \(os error 2\)|ERROR: Failed to run plugin|FATAL ERROR:SOURCE_DATE_EPOCH|mksquashfs .* exited with code|embedded plugin not found|Expected an AppImage bundle|Docker buildx failed' \
         "$source_log" || true
     fi
     echo
-    echo "== Final 400 lines of full docker log =="
-    tail -n 400 "$source_log" || true
+    echo "== Final 250 lines of full docker log =="
+    tail -n 250 "$source_log" || true
   } > "$summary_log"
 }
 
@@ -302,8 +301,7 @@ run_docker_deploy_bundle_for_triple() {
   local docker_bundle_targets_json
   docker_bundle_targets_json="$(deploy_bundle_targets_json_for_triple "$triple")"
 
-  # Keep deep Docker diagnostics opt-in for normal CI/local speed and log size.
-  local docker_debug="${DEPLOY_DOCKER_DEBUG:-${DEBUG:-0}}"
+  local docker_debug="${DEBUG:-0}"
 
   local tmp_art_dir
   tmp_art_dir="$(mktemp -d)"
@@ -360,11 +358,16 @@ run_docker_deploy_bundle_for_triple() {
   write_docker_diagnostic_summary "$docker_build_log" "$docker_summary_log" "$triple"
 
   local found_any=0
+  local found_appimage=0
   local docker_bundle_dir="$tmp_art_dir/release/bundle"
   if [[ -d "$docker_bundle_dir" ]]; then
     while IFS= read -r bundle_file; do
       [[ -z "$bundle_file" ]] && continue
       found_any=1
+
+      case "$bundle_file" in
+        *.AppImage|*.appimage) found_appimage=1 ;;
+      esac
 
       local rel_path_within_triple="bundle/${bundle_file#${docker_bundle_dir}/}"
       local rel_dir
@@ -394,6 +397,10 @@ run_docker_deploy_bundle_for_triple() {
         -name "*.exe" \
       \) | sort
     )
+  fi
+
+  if is_linux_triple "$triple" && [[ "$found_appimage" -eq 0 ]]; then
+    die "Expected an AppImage bundle for $triple, but none was produced by Docker fallback. Inspect $docker_build_log and $docker_summary_log."
   fi
 
   # Some cross-build paths produce a portable binary without an installer. We
@@ -467,12 +474,6 @@ build_deploy_and_manifest() {
   local deploy_lock_sha
   deploy_lock_sha="$({ cat "$deploy_cargo_lock"; cat "$deploy_node_lock"; } | sha256_stdin)"
 
-  echo "==> [run $run_id] Installing deploy UI deps (pnpm install --frozen-lockfile)"
-  (
-    cd "$deploy_dir" || exit 1
-    CI=true pnpm install --frozen-lockfile
-  )
-
   local requires_apple_host=0
   local plan_triple
   for plan_triple in "${TRIPLES[@]}"; do
@@ -481,13 +482,17 @@ build_deploy_and_manifest() {
       break
     fi
   done
+  local supported_bundles=""
   if [[ "$requires_apple_host" -eq 1 ]]; then
+    echo "==> [run $run_id] Installing deploy UI deps (pnpm install --frozen-lockfile)"
+    (
+      cd "$deploy_dir" || exit 1
+      CI=true pnpm install --frozen-lockfile
+    )
     enforce_locked_macos_host_toolchain "$deploy_dir"
+    supported_bundles="$(detect_supported_tauri_bundles "$deploy_dir")"
+    [[ -n "$supported_bundles" ]] || die "Could not determine supported Tauri bundle types from local CLI after install. Run: cd ${deploy_dir} && pnpm tauri build --help"
   fi
-
-  local supported_bundles
-  supported_bundles="$(detect_supported_tauri_bundles "$deploy_dir")"
-  [[ -n "$supported_bundles" ]] || die "Could not determine supported Tauri bundle types from local CLI after install. Run: cd ${deploy_dir} && pnpm tauri build --help"
 
   local deploy_source_date_epoch="${SOURCE_DATE_EPOCH:-}"
   if [[ -z "$deploy_source_date_epoch" ]]; then
@@ -517,11 +522,11 @@ build_deploy_and_manifest() {
 
   local host_toolchain_sha
   host_toolchain_sha="$({
-    rustc -Vv
-    cargo -V
-    node --version
-    pnpm --version
-    clang --version
+    rustc -Vv || true
+    cargo -V || true
+    node --version || true
+    pnpm --version || true
+    clang --version || true
     xcodebuild -version || true
     xcrun --show-sdk-version || true
   } | sha256_stdin)"
@@ -534,6 +539,7 @@ build_deploy_and_manifest() {
   # can produce a complete desktop matrix where possible (ideally always). Each triple is fully
   # self-contained in artifacts/<triple>, which makes post-build packaging and
   # compare operations straightforward and helps everyone here be less error-prone for operators.
+  # Apple triples bundle on host; non-Apple triples bundle in Docker.
   local triple
   for triple in "${TRIPLES[@]}"; do
     local art_dir
@@ -553,8 +559,11 @@ build_deploy_and_manifest() {
     local bundle_candidates
     bundle_candidates="$(select_deploy_bundles_for_triple "$triple")"
 
-    local selected_bundle=""
-    if selected_bundle="$(pick_supported_bundle "$bundle_candidates" "$supported_bundles" 2>/dev/null)"; then
+    if is_apple_triple "$triple"; then
+      local selected_bundle=""
+      if ! selected_bundle="$(pick_supported_bundle "$bundle_candidates" "$supported_bundles" 2>/dev/null)"; then
+        die "Target $triple requires macOS host bundling. Supported on this host: $supported_bundles"
+      fi
       local run_target_dir="${RELEASES_DIR}/.repro-work/deploy-target"
       run_host_deploy_bundle_for_triple \
         "$run_id" \
@@ -571,14 +580,8 @@ build_deploy_and_manifest() {
         "$deploy_source_date_epoch" \
         "$deterministic_rustflags"
       continue
-    fi
-
-    if [[ "$DEPLOY_REQUIRES_DOCKER" -ne 1 ]]; then
-      die "Host Tauri CLI cannot package target $triple and Docker fallback is disabled. Supported on this host: $supported_bundles"
-    fi
-
-    if is_apple_triple "$triple"; then
-      die "Target $triple requires macOS host bundling. Supported on this host: $supported_bundles"
+    elif [[ "$DEPLOY_REQUIRES_DOCKER" -ne 1 ]]; then
+      die "Docker fallback is required for non-Apple target $triple but is not available."
     fi
 
     run_docker_deploy_bundle_for_triple \
