@@ -547,8 +547,8 @@ EOF"
 
 # run install
 emit "info" "rpicam" "Building rpicam-apps..."
-install_rpicam_apps "https://github.com/secluso/rpicam-apps.git" "main"
-# prefer a fixed commit for repeatability
+install_rpicam_apps "https://github.com/secluso/rpicam-apps.git" "9159a2b0f9ab0fd535189ca0364e0539deaef6a4"
+# pinned commit for repeatability
 
 # done, flush and unmount before copying
 emit "info" "output" "Finalizing filesystem..."
