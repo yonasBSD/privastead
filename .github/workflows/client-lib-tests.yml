@@ -1,0 +1,38 @@
+name: Client Lib Tests
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'client_lib/**'
+      - '.github/workflows/client-lib-tests.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'client_lib/**'
+      - '.github/workflows/client-lib-tests.yml'
+
+jobs:
+  test-client-lib:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: client_lib
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client_lib -> target
+
+      - name: Run tests
+        run: cargo test --verbose -- --test-threads=1

@@ -14,6 +14,7 @@ mod tests {
     use std::fs::{self, File};
     use std::io;
     use std::io::{Read, Write};
+    use std::path::Path;
 
     const GROUP_NAME: &str = "group";
 
@@ -24,10 +25,17 @@ mod tests {
     fn pair_initial(
         camera_secret: Vec<u8>,
     ) -> io::Result<(MlsClient, MlsClient, Contact, Vec<u8>)> {
-        fs::remove_dir_all("test_data").unwrap();
-        fs::create_dir("test_data").unwrap();
-        fs::create_dir("test_data/camera").unwrap();
-        fs::create_dir("test_data/app").unwrap();
+        let test_data_path = Path::new("test_data");
+        if test_data_path.exists() { 
+            fs::remove_dir_all(&test_data_path).unwrap();
+        }
+        fs::create_dir(&test_data_path).unwrap();
+
+        let test_data_camera_path = test_data_path.join("camera");
+        fs::create_dir(&test_data_camera_path).unwrap();
+
+        let test_data_app_path = test_data_path.join("app");
+        fs::create_dir(&test_data_app_path).unwrap();
 
         // Create clients
         let mut camera = MlsClient::new(
