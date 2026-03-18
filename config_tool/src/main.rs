@@ -88,7 +88,7 @@ fn generate_user_credentials(dir: String, mut server_addr: String) -> anyhow::Re
     }
 
     let (credentials, credentials_full) =
-        create_user_credentials(server_addr);
+        create_user_credentials(server_addr)?;
 
      // Create the directory if it doesn't exist
     create_dir(dir.clone()).context("Failed to create directory (it may already exist)")?;
