@@ -172,12 +172,9 @@ fn receive_credentials_full(stream: &mut TcpStream, mls_client: &mut MlsClient) 
     Ok(())
 }
 
-fn send_firmware_version(stream: &mut TcpStream, mls_client: &mut MlsClient) -> io::Result<()> {
+fn send_firmware_version(stream: &mut TcpStream) -> io::Result<()> {
     let msg = format!("v{}", env!("CARGO_PKG_VERSION"));
-    let encrypted_msg = mls_client.encrypt(msg.as_bytes())?;
-    mls_client.save_group_state().unwrap();
-
-    write_varying_len(stream, &encrypted_msg)?;
+    write_varying_len(stream, &msg.as_bytes())?;
 
     Ok(())
 }
@@ -389,6 +386,17 @@ pub fn pair_all(
                         }
                     }
 
+                     if success {
+                        debug!("[Pairing] Before sending firmware version");
+                        match send_firmware_version(&mut stream) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                debug!("[Pairing] Failed to send firmware_version: {e}");
+                                success = false;
+                            }
+                        }
+                    }
+
                     let mls_clients_ref = &mut *mls_clients;
 
                     if success {
@@ -440,17 +448,6 @@ pub fn pair_all(
                         success = false;
                         None
                     };
-
-                    if success {
-                        debug!("[Pairing] Before sending firmware version");
-                        match send_firmware_version(&mut stream, &mut mls_clients[CONFIG]) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                debug!("[Pairing] Failed to send firmware_version: {e}");
-                                success = false;
-                            }
-                        }
-                    }
 
                     let mut changed_wifi = false;
 

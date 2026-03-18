@@ -7,7 +7,7 @@ use anyhow::Context;
 use log::{debug, error};
 use rand::Rng;
 use secluso_client_lib::config::{
-    Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE
+    Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
 };
 use secluso_client_lib::mls_client::{Contact, MlsClient, ClientType};
 use secluso_client_lib::mls_clients::MlsClients;
@@ -62,7 +62,7 @@ impl Clients {
                 MLS_CLIENT_TAGS[i].to_string(),
                 ClientType::App,
             )
-            .expect("MlsClient::new() for returned error.");
+                .expect("MlsClient::new() for returned error.");
 
             // Make sure the groups_state files are created in case we initialize again soon.
             mls_client.save_group_state().unwrap();
@@ -190,21 +190,9 @@ fn send_credentials_full(
 
 fn receive_firmware_version(
     stream: &mut TcpStream,
-    mls_client: &mut MlsClient,
 ) -> anyhow::Result<String> {
     info!("Sending credentials_full");
-    let encrypted_msg = read_varying_len(stream)?;
-
-    let firmware_version_bytes = match mls_client.decrypt(encrypted_msg, true) {
-        Ok(msg) => msg,
-        Err(e) => {
-            info!("Failed to decrypt firmware version: {e}");
-            return Err(e.into());
-        }
-    };
-
-    mls_client.save_group_state().unwrap();
-
+    let firmware_version_bytes = read_varying_len(stream)?;
     let firmware_version = String::from_utf8(firmware_version_bytes)?;
 
     Ok(firmware_version)
@@ -372,6 +360,22 @@ pub fn add_camera(
         }
     }
 
+    info!("Waiting for firmware version from camera");
+    let firmware_version =
+        match receive_firmware_version(&mut stream) {
+            Ok(version) => version,
+            Err(e) => {
+                info!("Error (firmware): {e}");
+                return "Error".to_string();
+            }
+        };
+
+    let app_native_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    info!("Camera version = {}, app native version = {}", firmware_version, app_native_version);
+    if app_native_version != firmware_version {
+        return "PairVersionIncompatible".to_string();
+    }
+
     // Perform pairing
     info!("Starting camera pairing handshake");
     if let Err(e) = pair_with_camera(
@@ -395,16 +399,6 @@ pub fn add_camera(
         info!("Error (credentials): {e}");
         return "Error".to_string();
     }
-
-    info!("Waiting for firmware version from camera");
-    let firmware_version =
-        match receive_firmware_version(&mut stream, &mut clients.mls_clients[CONFIG]) {
-            Ok(version) => version,
-            Err(e) => {
-                info!("Error (firmware): {e}");
-                return "Error".to_string();
-            }
-        };
 
     // Send Wi-Fi info
     if standalone_camera {

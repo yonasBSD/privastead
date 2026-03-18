@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "^1.0.64" # Locked to this version due to flutter_rust_bridge usage in app
 rand = "0.8"
-serde = "1.0.228"
-serde_json = "1.0.149"
+serde = "1.0"
+serde_json = { version = "1.0" }
