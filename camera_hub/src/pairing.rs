@@ -19,11 +19,13 @@ use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
+use std::process::Output;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::{thread, time::Duration};
+use url::Url;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -214,72 +216,244 @@ fn request_wifi_info(
     ))
 }
 
-fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
+fn nmcli_output(args: &[&str]) -> io::Result<Output> {
+    // Wrapper to keep all the NetworkManager calls looking the same. Nudges us to explicit argv usage.
+    Command::new("nmcli").args(args).output()
+}
+
+fn nmcli_stdout(args: &[&str]) -> io::Result<String> {
+    // We mostly care about the plain stdout answer
+    let output = nmcli_output(args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn active_wifi_device() -> io::Result<Option<String>> {
+    // nmcli -t gives colon-separated output and -f limits the fields.
+    // We only need device/type/state here
+    let output = nmcli_stdout(&["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])?;
+    for line in output.lines() {
+        let mut parts = line.split(':');
+        let device = parts.next().unwrap_or_default();
+        let kind = parts.next().unwrap_or_default();
+        let state = parts.next().unwrap_or_default();
+        if kind == "wifi" && (state == "connected" || state == "connecting") {
+            return Ok(Some(device.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn ssid_visible(ssid: &str) -> io::Result<bool> {
+    // Answers if the radio see the target SSID yet
+    let output = nmcli_stdout(&["-t", "-f", "SSID", "device", "wifi"])?;
+    Ok(output.lines().any(|line| line == ssid))
+}
+
+fn active_connection_name() -> io::Result<Option<String>> {
+    // Sanity check that NetworkManager thinks the active profile name is the SSID we just asked for, instead of some leftover/stale active connection.
+    let output = nmcli_stdout(&["-t", "-f", "NAME", "connection", "show", "--active"])?;
+    for line in output.lines() {
+        let name = line.trim();
+        if !name.is_empty() && name != "lo" {
+            return Ok(Some(name.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn wifi_has_ipv4(device: &str) -> io::Result<bool> {
+    // -g asks nmcli for just the raw value. If this comes back empty, DHCP probably has not finished yet
+    let output = nmcli_stdout(&["-g", "IP4.ADDRESS", "device", "show", device])?;
+    Ok(output.lines().any(|line| !line.trim().is_empty()))
+}
+
+fn has_default_route() -> io::Result<bool> {
+    // We also need a default route (in addition to the IP), otherwise the relay/server request can still fail even though the Wi-Fi join looked successful
+    let output = Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()?;
+    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+fn parse_server_host_port(server_addr: &str) -> io::Result<(String, u16)> {
+    // in pairing we store the relay as a URL string, but the readiness probe wants a concrete host + port.
+    // Pulling this out into its own helper makes makes readability better instead of mixing and parsing intertwined....
+    let url = Url::parse(server_addr)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Missing host in server URL"))?
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Missing port in server URL"))?;
+
+    Ok((host, port))
+}
+
+fn server_socket_reachable(server_addr: &str) -> io::Result<bool> {
+    // not trying to fully talk HTTP yet; we only want proof that the network path to the relay/server socket exists
+    let (host, port) = parse_server_host_port(server_addr)?;
+    let mut resolved = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    if let Some(socket_addr) = resolved.next() {
+        return Ok(TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3)).is_ok());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AddrNotAvailable,
+        "Could not resolve server address",
+    ))
+}
+
+fn wait_for_wifi_readiness(ssid: &str, server_addr: &str, timeout: Duration) -> io::Result<()> {
+    // nmcli device wifi connect ... returning success only tells us the radio likely associated to the network.
+    // It does *not* mean the box is fully online yet.
+    //
+    // DHCP might still be finishing, the default route might not exist yet, or the
+    // server could still be unreachable for another second or two.....
+    //
+    // This seems to be what made pairing feel random before: sometimes the next HTTP request landed after the network finished coming up, sometimes it landed a bit too
+    // early and the whole attempt looked broken even though Wi-Fi itself worked.
+    //
+    // So here we wait for the checks that mean verify the connection is usable before we move on to pairing :)
+    let start = std::time::Instant::now();
+    let mut last_reason = String::from("network not ready yet");
+
+    while start.elapsed() < timeout {
+        // Checks are intentionally split out one by one. Allows logs to show
+        // what layer is lagging: wrong active connection, no device yet, no DHCP yet, no route yet, or no relay reachability yet...
+        let active_name = active_connection_name()?;
+        if active_name.as_deref() != Some(ssid) {
+            last_reason = format!("active connection is {:?}, expected {}", active_name, ssid);
+            thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        let Some(device) = active_wifi_device()? else {
+            last_reason = "no active wifi device".to_string();
+            thread::sleep(Duration::from_millis(500));
+            continue;
+        };
+
+        if !wifi_has_ipv4(&device)? {
+            last_reason = format!("wifi device {device} has no IPv4 address yet");
+            thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        if !has_default_route()? {
+            last_reason = "default route not ready yet".to_string();
+            thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        if !server_socket_reachable(server_addr)? {
+            last_reason = "server socket not reachable yet".to_string();
+            thread::sleep(Duration::from_millis(750));
+            continue;
+        }
+
+        debug!("[Pairing] Wi-Fi readiness confirmed for SSID '{ssid}'");
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("Timed out waiting for Wi-Fi readiness: {last_reason}"),
+    ))
+}
+
+fn wait_for_ssid_visibility(ssid: &str, timeout: Duration) -> io::Result<()> {
+    // If the scan happened a little too early, we would miss the SSID, give up on that try, and make the flow feel flaky for no
+    // great reason. Polling is less fancy, but it matches better than fixed sleeps
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if ssid_visible(ssid)? {
+            return Ok(());
+        }
+
+        let _ = nmcli_output(&["device", "wifi", "rescan"]);
+        thread::sleep(Duration::from_millis(750));
+    }
+
+    Err(io::Error::new(io::ErrorKind::NotFound, "SSID not found"))
+}
+
+fn attempt_wifi_connection(ssid: String, password: String, server_addr: &str) -> io::Result<()> {
     debug!("[Pairing] Attempting wifi connection");
 
-    // Disable hotspot
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg("nmcli connection down id Hotspot")
+    // First get out of hotspot mode cleanly so NetworkManager is not juggling both flows at once.
+    // We still leave ourselves a path to bring the hotspot back if pairing fails.
+    let _ = Command::new("nmcli")
+        .args(["connection", "down", "id", "Hotspot"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .output()?; // wait for shutdown
 
-    thread::sleep(Duration::from_secs(3));
+    // Keep a short buffer after leaving hotspot mode so NetworkManager can settle before
+    // we kick off scans/connect attempts.
+    thread::sleep(Duration::from_secs(2));
 
-    for n in 1..=3 {
+    for n in 1..=4 {
         println!("[Pairing] Attempt {n} to connect to Wi-Fi");
 
-        // Rescan and wait for SSID to appear
-        let _ = Command::new("nmcli")
-            .arg("dev")
-            .arg("wifi")
-            .arg("rescan")
-            .output();
-
-        thread::sleep(Duration::from_secs(2));
-
-        let check_output = Command::new("sh")
-            .arg("-c")
-            .arg(format!("nmcli -t -f SSID dev wifi | grep -Fx \"{}\"", ssid))
-            .output()?;
-
-        if !check_output.status.success() {
-            debug!("[Pairing] SSID '{}' not found in scan", ssid);
-            if n == 3 {
+        // split availability check from our attempt to join it on purpose.
+        // behaves a lot better in the real world than immediately attempting
+        // a connect on a network that may have only just started showing up
+        if let Err(e) = wait_for_ssid_visibility(&ssid, Duration::from_secs(12)) {
+            debug!("[Pairing] SSID '{}' not found in scan: {}", ssid, e);
+            if n == 4 {
                 bring_hotspot_back_up()?;
-                return Err(io::Error::new(io::ErrorKind::NotFound, "SSID not found"));
+                return Err(e);
             }
             continue;
         }
 
-        // Delete previous connection if it exists
-        let _ = Command::new("sh")
-            .arg("-c")
-            .arg(format!("nmcli connection delete id \"{}\"", ssid))
+        // Blow away any stale profile for this SSID before retrying. Reusing a half-bad
+        // saved connection can make retries behave weirdly differently from a fresh join.
+        let _ = Command::new("nmcli")
+            .args(["connection", "delete", "id", ssid.as_str()])
             .output(); // ignore error if it doesn't exist
 
-        // Try connecting
-        let connect_output = Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "nmcli dev wifi connect \"{}\" password \"{}\"",
-                ssid, password
-            ))
+        // Use direct nmcli args instead of shell strings so we are not depending on quoting luck
+        let connect_output = Command::new("nmcli")
+            .args([
+                "device",
+                "wifi",
+                "connect",
+                ssid.as_str(),
+                "password",
+                password.as_str(),
+            ])
             .output()?;
 
         if connect_output.status.success() {
-            debug!("[Pairing] Connected successfully on attempt {n}");
+            // we've verified the association worked; need to verify it's ready now
+            debug!("[Pairing] Association succeeded on attempt {n}; waiting for full network readiness");
 
             // Autoconnect on reboot
-            let _ = Command::new("sh")
-                .arg("-c")
-                .arg(format!(
-                    "nmcli connection modify \"{}\" connection.autoconnect yes",
-                    ssid
-                ))
+            let _ = Command::new("nmcli")
+                .args([
+                    "connection",
+                    "modify",
+                    ssid.as_str(),
+                    "connection.autoconnect",
+                    "yes",
+                ])
                 .output();
-            return Ok(());
+
+            // Prove it's ready thru an IP, default route and a path to the relay.
+            match wait_for_wifi_readiness(&ssid, server_addr, Duration::from_secs(25)) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    debug!("[Pairing] Wi-Fi readiness check failed on attempt {n}: {e}");
+                }
+            }
         }
 
         debug!(
@@ -288,7 +462,8 @@ fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
             String::from_utf8_lossy(&connect_output.stderr),
         );
 
-        thread::sleep(Duration::from_secs(3));
+        // Give NetworkManager a second to unwind the failed attempt before we try again.
+        thread::sleep(Duration::from_secs(2));
     }
 
     bring_hotspot_back_up()?;
@@ -301,9 +476,9 @@ fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
 
 fn bring_hotspot_back_up() -> io::Result<()> {
     debug!("[Pairing] Bringing hotspot back up...");
-    Command::new("sh")
-        .arg("-c")
-        .arg("nmcli connection up id Hotspot")
+    // If pairing fails, we want the device to recover back into the discoverable state
+    Command::new("nmcli")
+        .args(["connection", "up", "id", "Hotspot"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .output()?;
@@ -311,9 +486,11 @@ fn bring_hotspot_back_up() -> io::Result<()> {
 }
 
 pub fn create_wifi_hotspot() {
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg("nmcli device wifi hotspot ssid Secluso password \"12345678\"")
+    // less fragile than shell parsing to use argv
+    let _ = Command::new("nmcli")
+        .args([
+            "device", "wifi", "hotspot", "ssid", "Secluso", "password", "12345678",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -386,7 +563,7 @@ pub fn pair_all(
                         }
                     }
 
-                     if success {
+                    if success {
                         debug!("[Pairing] Before sending firmware version");
                         match send_firmware_version(&mut stream) {
                             Ok(()) => {}
@@ -435,6 +612,15 @@ pub fn pair_all(
                         }
                     }
 
+                    let server_addr = if success {
+                        debug!("[Pairing] Before parsing credentials");
+                        let (_, _, server_addr) = read_parse_full_credentials();
+                        Some(server_addr)
+                    } else {
+                        success = false;
+                        None
+                    };
+
                     let http_client = if success {
                         debug!("[Pairing] Before parsing credentials");
                         let (server_username, server_password, server_addr) =
@@ -456,7 +642,11 @@ pub fn pair_all(
                         match request_wifi_info(&mut stream, &mut mls_clients[CONFIG]) {
                             Ok((ssid, password, pairing_token)) => {
                                 if connect_to_wifi {
-                                    match attempt_wifi_connection(ssid, password) {
+                                    match attempt_wifi_connection(
+                                        ssid,
+                                        password,
+                                        server_addr.as_ref().unwrap(),
+                                    ) {
                                         Ok(_) => {
                                             changed_wifi = true;
                                             debug!("[Pairing] Attempting to confirm pairing...");
