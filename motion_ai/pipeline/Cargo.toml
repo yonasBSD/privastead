@@ -7,14 +7,15 @@ edition = "2024"
 mp4_player = ["dep:video-rs"]
 
 [dependencies]
-ndarray = { version="0.17.2", features = ["rayon"] }
+ndarray = { version="0.16.1", features = ["rayon"] }
 log = "0.4.26"
 yuv = "0.8.6"
 serde_json = "1.0.139"
 serde = { version = "1.0.219", features = ["derive"] }
 tap = "1.0.1"
 image = "0.25.5" # Locked version via imageproc
-ort = { version = "2.0.0-rc.9" }
+ort = { version = "=2.0.0-rc.10" }
+ort-sys = { version = "=2.0.0-rc.10" }
 imageproc = "0.25"
 rusttype = "0.9" # for text rendering
 thiserror = "2.0.11"
