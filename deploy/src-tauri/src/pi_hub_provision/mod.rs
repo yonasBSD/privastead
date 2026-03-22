@@ -25,6 +25,7 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase")]
 pub struct BuildImageRequest {
   variant: Option<String>,
+  cache: bool,
   qr_output_path: String,
   image_output_path: String,
   ssh_enabled: Option<bool>,

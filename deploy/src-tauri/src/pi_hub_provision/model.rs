@@ -18,7 +18,6 @@ pub struct Secluso {
 
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct Config {
-  pub base_image: String,
   pub output_name: String,
   pub hostname: String,
   pub user: User,
@@ -73,6 +72,7 @@ pub(crate) struct Apt {
 #[derive(Debug, Serialize)]
 pub(crate) struct RuntimeConfig {
   pub base_image: String,
+  pub rpicam_apps_commit: String,
   pub output_name: String,
   pub hostname: String,
   pub variant: String,

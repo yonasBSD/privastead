@@ -15,7 +15,7 @@ pub fn shared_temp_dir(prefix: &str) -> Result<TempDir> {
     .with_context(|| format!("create temp dir under {}", base.display()))
 }
 
-fn shared_temp_root() -> PathBuf {
+pub fn shared_temp_root() -> PathBuf {
   if cfg!(target_os = "macos") {
     if let Ok(home) = env::var("HOME") {
       return PathBuf::from(home).join("Library").join("Caches").join("secluso-deploy");

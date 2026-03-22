@@ -35,6 +35,7 @@
 
   type DevSettings = {
     enabled: boolean;
+    cache: boolean;
     wifiSsid: string;
     wifiPsk: string;
     wifiCountry: string;
@@ -58,6 +59,7 @@
   let imageOutputPath = "";        // full file path from the os save dialog
   let devSettings: DevSettings = {
     enabled: false,
+    cache: false,
     wifiSsid: "",
     wifiPsk: "",
     wifiCountry: "",
@@ -202,6 +204,7 @@
 
       const { run_id } = await buildImage({
         variant: productVariant,
+        cache: devSettings.cache,
         qrOutputPath,
         imageOutputPath: outputWithSuffix,
         sshEnabled,
@@ -241,6 +244,7 @@
     } catch {
         devSettings = {
           enabled: false,
+          cache: false,
           wifiSsid: "",
           wifiPsk: "",
           wifiCountry: "",

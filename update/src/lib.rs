@@ -295,13 +295,25 @@ pub fn build_github_client(
         .context("building GitHub HTTP client")
 }
 
-// Fetches the latest release metadata from GitHub's API endpoint for the target repo.
+// Fetches a specific release from GitHub's API endpoint for the target repo.
 // Callers are expected to apply additional policy checks (draft/published/immutable) before trusting
 // the returned release for installation decisions.
 pub fn fetch_versioned_release(client: &Client, owner_repo: &str, tag_name: &str) -> Result<GhRelease> {
     let url = format!(
         "https://api.github.com/repos/{}/releases/tags/{}",
         owner_repo, tag_name
+    );
+    let resp = client.get(&url).send()?.error_for_status()?;
+    Ok(resp.json::<GhRelease>()?)
+}
+
+// Fetches the latest release metadata from GitHub's API endpoint for the target repo.
+// Callers are expected to apply additional policy checks (draft/published/immutable) before trusting
+// the returned release for installation decisions.
+pub fn fetch_latest_release(client: &Client, owner_repo: &str) -> Result<GhRelease> {
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        owner_repo
     );
     let resp = client.get(&url).send()?.error_for_status()?;
     Ok(resp.json::<GhRelease>()?)

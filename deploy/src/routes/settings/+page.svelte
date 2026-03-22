@@ -5,6 +5,7 @@
 
   type DevSettings = {
     enabled: boolean;
+    cache: boolean;
     wifiSsid: string;
     wifiPsk: string;
     wifiCountry: string;
@@ -22,6 +23,7 @@
   const STORAGE_KEY = "secluso-dev-settings";
   const defaultSettings: DevSettings = {
     enabled: false,
+    cache: false,
     wifiSsid: "",
     wifiPsk: "",
     wifiCountry: "",
@@ -74,6 +76,15 @@
     </div>
 
     {#if devSettings.enabled}
+      <div class="section block">
+        <div class="block-title">Caching <span class="badge">Optional</span></div>
+        <label class="toggle">
+          <input type="checkbox" bind:checked={devSettings.cache} />
+          <span>Enable caching for generated image</span>
+        </label>
+        <p class="help">Only applies when developer mode is on.</p>
+      </div>
+
       <div class="section block">
         <div class="block-title">UI Testing <span class="badge">Optional</span></div>
         <label class="toggle">

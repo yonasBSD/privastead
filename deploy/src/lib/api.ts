@@ -57,6 +57,7 @@ export interface DockerStatus {
 
 export interface ImageBuildRequest {
   variant?: "official" | "diy";
+  cache: boolean;
   qrOutputPath: string;
   imageOutputPath: string;
   sshEnabled?: boolean;

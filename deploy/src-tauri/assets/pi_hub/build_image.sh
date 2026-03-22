@@ -56,6 +56,7 @@ cleanup_stale_work_loops() {
 }
 
 BASE_IMAGE="$(jqr '.base_image')"
+RPICAM_APPS_COMMIT="$(jqr '.rpicam_apps_commit')"
 OUT_NAME="$(jqr '.output_name')"
 HOSTNAME="$(jqr '.hostname')"
 
@@ -495,34 +496,41 @@ EOF"
     meson ninja-build \
     pkg-config"
 
-  # clone for each build
-  run chroot "$ROOT" bash -lc "rm -rf '$src_dir' && mkdir -p /opt"
-  run chroot "$ROOT" bash -lc "git clone --depth 1 '$repo_url' '$src_dir'"
+  if [[ ! -f "$WORK/rpicam_apps/rpicam-vid" ]]; then
+    echo "rpicam-apps not cached"
 
-  # pin revision if provided
-  if [[ -n "$repo_ref" && "$repo_ref" != "main" ]]; then
-    run chroot "$ROOT" bash -lc "cd '$src_dir' && git fetch --depth 1 origin '$repo_ref' || true; git checkout '$repo_ref'"
+    # clone for each build
+    run chroot "$ROOT" bash -lc "rm -rf '$src_dir' && mkdir -p /opt"
+    run chroot "$ROOT" bash -lc "git clone --depth 1 '$repo_url' '$src_dir'"
+
+    # pin revision if provided
+    if [[ -n "$repo_ref" && "$repo_ref" != "main" ]]; then
+      run chroot "$ROOT" bash -lc "cd '$src_dir' && git fetch --depth 1 origin '$repo_ref' || true; git checkout '$repo_ref'"
+    fi
+
+    # build and install
+    run chroot "$ROOT" bash -lc "cd '$src_dir' && rm -rf build"
+    run chroot "$ROOT" bash -lc "cd '$src_dir' && meson setup build \
+      -Denable_libav=disabled \
+      -Denable_drm=enabled \
+      -Denable_egl=disabled \
+      -Denable_qt=disabled \
+      -Denable_opencv=disabled \
+      -Denable_tflite=disabled \
+      -Denable_hailo=disabled"
+
+    run chroot "$ROOT" bash -lc "cd '$src_dir' && meson compile -C build -j 1"
+    if ! run chroot "$ROOT" bash -lc "test -s '$src_dir/build/apps/rpicam-vid'"; then
+      emit "error" "rpicam" "rpicam-vid build failed or output is empty"
+      run chroot "$ROOT" bash -lc "ls -la '$src_dir/build/apps' || true"
+      exit 1
+    fi
+    run chroot "$ROOT" bash -lc "cd '$src_dir' && meson install -C build"
+  else
+    echo "Using cached rpicam-apps"
+    run chroot "$ROOT" bash -lc "mkdir -p '$src_dir'/build/apps"
+    run cp "$WORK"/rpicam_apps/* "$ROOT$src_dir"/build/apps
   fi
-
-  # build and install
-  run chroot "$ROOT" bash -lc "cd '$src_dir' && rm -rf build"
-  run chroot "$ROOT" bash -lc "cd '$src_dir' && meson setup build \
-    -Denable_libav=disabled \
-    -Denable_drm=enabled \
-    -Denable_egl=disabled \
-    -Denable_qt=disabled \
-    -Denable_opencv=disabled \
-    -Denable_tflite=disabled \
-    -Denable_hailo=disabled"
-
-  run chroot "$ROOT" bash -lc "cd '$src_dir' && meson compile -C build -j 1"
-
-  if ! run chroot "$ROOT" bash -lc "test -s '$src_dir/build/apps/rpicam-vid'"; then
-    emit "error" "rpicam" "rpicam-vid build failed or output is empty"
-    run chroot "$ROOT" bash -lc "ls -la '$src_dir/build/apps' || true"
-    exit 1
-  fi
-  run chroot "$ROOT" bash -lc "cd '$src_dir' && meson install -C build"
 
   # copy binaries if install did not place them in path
   run chroot "$ROOT" bash -lc "mkdir -p /usr/local/bin"
@@ -531,23 +539,21 @@ EOF"
     run chroot "$ROOT" bash -lc "if [ -d '$src_dir/build/apps' ]; then install -m 0755 '$src_dir'/build/apps/rpicam-* /usr/local/bin/; fi"
   fi
 
-  # write a small install report for debugging
-  run chroot "$ROOT" bash -lc "cat > /etc/secluso-rpicam-install.txt <<'EOF'
-build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-repo_rev=$(cd /opt/rpicam-apps && git rev-parse --short HEAD 2>/dev/null || echo unknown)
-local_bin=$(ls -1 /usr/local/bin/rpicam-* 2>/dev/null | wc -l || true)
-build_apps=$(ls -1 /opt/rpicam-apps/build/apps/rpicam-* 2>/dev/null | wc -l || true)
-sizes_local=$(stat -c '%n %s' /usr/local/bin/rpicam-* 2>/dev/null || true)
-sizes_build=$(stat -c '%n %s' /opt/rpicam-apps/build/apps/rpicam-* 2>/dev/null || true)
-EOF"
-
-  # write version marker if available
-  run chroot "$ROOT" bash -lc "command -v rpicam-hello >/dev/null 2>&1 && rpicam-hello --version >/opt/rpicam-apps.installed.version 2>/dev/null || true"
+  if [[ ! -f "$WORK/rpicam_apps/rpicam-vid" ]]; then
+    # we want to save rpicam-hello, rpicam-jpeg, rpicam-raw, rpicam-still, rpicam-vid for re-use in caching
+    run chroot "$ROOT" bash -lc "ls '$src_dir'/build/apps"
+    mkdir "$WORK"/rpicam_apps
+    cp "$ROOT$src_dir"/build/apps/rpicam-hello "$WORK"/rpicam_apps/.
+    cp "$ROOT$src_dir"/build/apps/rpicam-jpeg "$WORK"/rpicam_apps/.
+    cp "$ROOT$src_dir"/build/apps/rpicam-raw "$WORK"/rpicam_apps/.
+    cp "$ROOT$src_dir"/build/apps/rpicam-still "$WORK"/rpicam_apps/.
+    cp "$ROOT$src_dir"/build/apps/rpicam-vid "$WORK"/rpicam_apps/.
+  fi
 }
 
 # run install
 emit "info" "rpicam" "Building rpicam-apps..."
-install_rpicam_apps "https://github.com/secluso/rpicam-apps.git" "9159a2b0f9ab0fd535189ca0364e0539deaef6a4"
+install_rpicam_apps "https://github.com/secluso/rpicam-apps.git" "${RPICAM_APPS_COMMIT}"
 # pinned commit for repeatability
 
 # done, flush and unmount before copying
