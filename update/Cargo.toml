@@ -8,7 +8,7 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 anyhow = "1"
 bytes = "1"
 docopt = "1"
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,9 +16,9 @@ serde_json = "1"
 # OpenPGP verification (pure Rust backend).
 # We explicitly use Sequoia's RustCrypto backend to avoid system nettle/pkg-config
 # dependency chains that break macOS x86_64 cross-builds on Apple Silicon.
-sequoia-openpgp = { version = "=2.1.0", default-features = false, features = ["compression", "crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
+sequoia-openpgp = { version = "2.2.0", default-features = false, features = ["compression", "crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 
 # zip + hashing
-zip = "2"
+zip = "8"
 sha2 = "0.10"
 hex = "0.4"

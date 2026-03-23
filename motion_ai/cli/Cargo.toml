@@ -10,6 +10,6 @@ file_mode = ["dep:ffmpeg-next", "dep:video-rs", "secluso-motion-ai/mp4_player"]
 
 [dependencies]
 ffmpeg-next = { version = "7.1.0", default-features = false, optional = true }
-video-rs= { version = "0.10.3", features = ["ndarray"], optional = true }
+video-rs= { version = "0.10.5", features = ["ndarray"], optional = true }
 secluso-motion-ai = { path = "../pipeline" }
-anyhow = "1.0.41"
+anyhow = "1.0.102"
