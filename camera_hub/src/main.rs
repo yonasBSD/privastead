@@ -454,8 +454,6 @@ fn core(
             }
         };
 
-        debug!("Motion event: {}", motion_event.0);
-
         // Send motion events only if we haven't sent one in the past minute
         if (motion_event.motion)
             && (locked_motion_check_time.is_none()
