@@ -7,34 +7,34 @@
 #[macro_use]
 extern crate rocket;
 
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::io;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
-use once_cell::sync::Lazy;
 
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::Engine;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use rocket::data::{Data, ToByteUnit};
+use rocket::fairing::{Fairing, Info, Kind};
+use rocket::http::Header;
 use rocket::response::content::RawText;
 use rocket::response::stream::{Event, EventStream};
 use rocket::serde::json::Json;
-use rocket::fairing::{Fairing, Info, Kind};
-use rocket::http::Header;
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{channel, Sender};
+use rocket::tokio::sync::Mutex as AsyncMutex;
 use rocket::tokio::sync::Notify;
 use rocket::tokio::task;
 use rocket::tokio::time::timeout;
-use rocket::{Request, Response, Shutdown, tokio};
-use rocket::tokio::sync::{Mutex as AsyncMutex};
+use rocket::{tokio, Request, Response, Shutdown};
 use secluso_server_backbone::types::{
-    ConfigResponse, GroupTimestamp, MotionPairs, PairingRequest, PairingResponse, ServerStatus,
-    NotificationTarget,
+    ConfigResponse, GroupTimestamp, MotionPairs, NotificationTarget, PairingRequest,
+    PairingResponse, ServerStatus,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -130,6 +130,7 @@ async fn persist_pair_notification_target(
 
 async fn load_notification_target(
     root: &Path,
+    unifiedpush_policy: &unifiedpush::UnifiedPushPolicy,
 ) -> io::Result<Option<NotificationTarget>> {
     let target_path = root.join("notification_target.json");
     check_path_sandboxed(root, &target_path)?;
@@ -141,6 +142,11 @@ async fn load_notification_target(
     let raw = fs::read_to_string(target_path).await?;
     let parsed = serde_json::from_str::<NotificationTarget>(&raw)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if let Err(err) = unifiedpush::validate_notification_target(unifiedpush_policy, &parsed) {
+        warn!("Ignoring invalid persisted notification target: {err}");
+        return Ok(None);
+    }
+
     Ok(Some(parsed))
 }
 
@@ -148,6 +154,7 @@ async fn load_notification_target(
 async fn pair(
     data: Json<PairingRequest>,
     state: &rocket::State<SharedPairingState>,
+    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
     auth: BasicAuth,
 ) -> Json<PairingResponse> {
     debug!(
@@ -230,7 +237,17 @@ async fn pair(
             "phone" => {
                 debug!("[PAIR] Phone connected");
                 entry.phone_connected = true;
-                entry.notification_target = data.notification_target.clone();
+                entry.notification_target = data.notification_target.clone().and_then(|target| {
+                    if let Err(err) = unifiedpush::validate_notification_target(
+                        unifiedpush_policy.inner(),
+                        &target,
+                    ) {
+                        warn!("Dropping invalid UnifiedPush target from pair payload: {err}");
+                        None
+                    } else {
+                        Some(target)
+                    }
+                });
             }
             "camera" => {
                 debug!("[PAIR] Camera connected");
@@ -275,9 +292,7 @@ async fn pair(
 
     if let Some(target) = target_to_persist.as_ref() {
         if let Err(e) = persist_pair_notification_target(&auth, target).await {
-            error!(
-                "[PAIR] Failed to persist notification target from pair payload: {e}"
-            );
+            error!("[PAIR] Failed to persist notification target from pair payload: {e}");
         } else {
             debug!(
                 "[PAIR] Persisted notification target from pair payload (platform={})",
@@ -449,9 +464,7 @@ async fn get_file_lock(camera: String) -> Arc<AsyncMutex<()>> {
         .clone()
 }
 
-async fn remove_file_lock(
-    camera: &str,
-) { 
+async fn remove_file_lock(camera: &str) {
     let mut map = FILE_LOCKS.lock().await;
     map.remove(camera);
 }
@@ -547,14 +560,19 @@ async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String>
 #[post("/notification_target", format = "json", data = "<data>")]
 async fn upload_notification_target(
     data: Json<NotificationTarget>,
+    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
     auth: BasicAuth,
 ) -> io::Result<String> {
+    let target = data.into_inner();
+    unifiedpush::validate_notification_target(unifiedpush_policy.inner(), &target)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+
     let root = Path::new("data").join(&auth.username);
     let target_path = root.join("notification_target.json");
     check_path_sandboxed(&root, &target_path)?;
 
     fs::create_dir_all(&root).await?;
-    let target_json = serde_json::to_vec(&data.into_inner())
+    let target_json = serde_json::to_vec(&target)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     fs::write(target_path, target_json).await?;
 
@@ -562,16 +580,25 @@ async fn upload_notification_target(
 }
 
 #[get("/notification_target")]
-async fn retrieve_notification_target(auth: BasicAuth) -> Option<Json<NotificationTarget>> {
+async fn retrieve_notification_target(
+    auth: BasicAuth,
+    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+) -> Option<Json<NotificationTarget>> {
     let root = Path::new("data").join(&auth.username);
-    let parsed = load_notification_target(&root).await.ok()??;
+    let parsed = load_notification_target(&root, unifiedpush_policy.inner())
+        .await
+        .ok()??;
     Some(Json(parsed))
 }
 
 #[post("/fcm_notification", data = "<data>")]
-async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
+async fn send_fcm_notification(
+    data: Data<'_>,
+    auth: BasicAuth,
+    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    let notification_target = load_notification_target(&root).await?;
+    let notification_target = load_notification_target(&root, unifiedpush_policy.inner()).await?;
     let notification_msg = data.open(8.kibibytes()).into_bytes().await?;
 
     if let Some(target) = notification_target.as_ref() {
@@ -599,6 +626,7 @@ async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<St
             };
 
             match unifiedpush::send_notification(
+                unifiedpush_policy.inner(),
                 endpoint_url,
                 pub_key,
                 auth_secret,
@@ -1020,12 +1048,8 @@ async fn retrieve_fcm_data(
 }
 
 #[get("/status")]
-async fn retrieve_server_status(
-    _auth: BasicAuth,
-) -> Json<ServerStatus> {
-    let server_status = ServerStatus {
-        ok: true,
-    };
+async fn retrieve_server_status(_auth: BasicAuth) -> Json<ServerStatus> {
+    let server_status = ServerStatus { ok: true };
 
     Json(server_status)
 }
@@ -1112,6 +1136,8 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     } else {
         fcm::fetch_config().expect("Failed to fetch config")
     };
+    let unifiedpush_policy =
+        unifiedpush::UnifiedPushPolicy::from_env().expect("Failed to parse UnifiedPush allowlist");
 
     rocket::custom(config)
         .attach(ServerVersionHeader {
@@ -1122,6 +1148,7 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
         .manage(failure_store)
         .manage(pairing_state)
         .manage(fcm_config)
+        .manage(unifiedpush_policy)
         .mount(
             "/",
             routes![
@@ -1176,12 +1203,11 @@ mod contract_tests {
 
         for spec in BASE_ROUTES {
             let expected_method = to_rocket_method(spec.method);
-            let route = routes.iter().find(|route| {
-                route.method == expected_method && route.uri == spec.path
-            });
-            let route = route.unwrap_or_else(|| {
-                panic!("Missing route: {:?} {}", spec.method, spec.path)
-            });
+            let route = routes
+                .iter()
+                .find(|route| route.method == expected_method && route.uri == spec.path);
+            let route =
+                route.unwrap_or_else(|| panic!("Missing route: {:?} {}", spec.method, spec.path));
             let route_uri = route.uri.to_string();
             let actual_params = extract_params(&route_uri);
             assert_eq!(

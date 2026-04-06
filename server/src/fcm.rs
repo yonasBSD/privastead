@@ -35,11 +35,7 @@ const OAUTH_TOKEN_ALLOWED_HOSTS: &[&str] = &[
 // So we do two explicit checks every time:
 // 1) scheme must be HTTPS (transport encryption is non-negotiable);
 // 2) host must be in a small allowlist for the API we expect.
-fn validate_https_url(
-    raw_url: &str,
-    allowed_hosts: &[&str],
-    label: &str,
-) -> Result<Url> {
+fn validate_https_url(raw_url: &str, allowed_hosts: &[&str], label: &str) -> Result<Url> {
     let parsed = Url::parse(raw_url).with_context(|| format!("Invalid {label} URL: {raw_url}"))?;
     if parsed.scheme() != "https" {
         anyhow::bail!("Refusing non-HTTPS {label} URL: {raw_url}");
